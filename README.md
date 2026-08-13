@@ -2,6 +2,20 @@
 
 一个面向 macOS 开发环境的安全缓存扫描与清理工具。界面使用 Vue 3，磁盘扫描、进程占用判断和清理操作由 Tauri 2 的 Rust 原生层执行。
 
+## 安装
+
+当前 Release 提供适用于 Apple Silicon（M 系列芯片）的 DMG 安装包。
+
+1. 下载 DMG 并将“开发缓存清理”拖入“应用程序”目录。
+2. 首次启动如被 macOS 拦截，可在 Finder 中按住 Control 点击应用，选择“打开”并确认。
+3. 若仍提示应用已损坏，请在终端执行以下命令后重新打开：
+
+```bash
+xattr -cr "/Applications/开发缓存清理.app"
+```
+
+此版本采用 ad-hoc 签名，适合开发者和熟悉 macOS 安全提示的用户。尚未使用 Apple Developer ID 签名或公证。
+
 ## 安全原则
 
 - 前端只能提交固定目标 ID，不能传入任意文件路径。
@@ -37,7 +51,7 @@ pnpm dev
 ```bash
 pnpm build
 cargo test --manifest-path src-tauri/Cargo.toml
-pnpm tauri build
+pnpm tauri build --bundles dmg
 ```
 
-macOS 应用产物位于 `src-tauri/target/release/bundle/macos/`。
+macOS DMG 产物位于 `src-tauri/target/release/bundle/dmg/`。
