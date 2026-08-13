@@ -211,7 +211,7 @@ onMounted(() => scan());
           <ShieldCheck :size="18" :stroke-width="1.8" />
         </div>
         <div>
-          <strong>Dev Cache Cleaner</strong>
+          <strong>DevCacheCleaner</strong>
           <span>仅处理可再生文件</span>
         </div>
       </div>

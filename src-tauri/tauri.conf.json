@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Dev Cache Cleaner",
-  "version": "0.1.1",
+  "productName": "DevCacheCleaner",
+  "version": "0.1.2",
   "identifier": "com.wangxiaobai.devcachecleaner",
   "build": {
     "beforeDevCommand": "pnpm dev",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Dev Cache Cleaner",
+        "title": "DevCacheCleaner",
         "width": 1100,
         "height": 760,
         "minWidth": 860,
