@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "开发缓存清理",
+  "productName": "Dev Cache Cleaner",
   "version": "0.1.0",
   "identifier": "com.wangxiaobai.devcachecleaner",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "开发缓存清理",
+        "title": "Dev Cache Cleaner",
         "width": 1100,
         "height": 760,
         "minWidth": 860,
