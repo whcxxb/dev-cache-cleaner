@@ -1,5 +1,5 @@
 use rayon::prelude::*;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeSet,
     env, fs, io,
@@ -7,6 +7,7 @@ use std::{
     process::Command,
     time::{SystemTime, UNIX_EPOCH},
 };
+use tauri::Manager;
 
 const CATEGORY_PACKAGE: &str = "package";
 const CATEGORY_BUILD: &str = "build";
@@ -87,6 +88,18 @@ pub struct CleanResult {
     message: String,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanupHistoryEntry {
+    id: String,
+    target_name: String,
+    status: String,
+    freed_bytes: u64,
+    skipped_entries: Vec<String>,
+    message: String,
+    created_at: u64,
+}
+
 #[tauri::command]
 pub async fn scan_cache_targets() -> Result<ScanResult, String> {
     tauri::async_runtime::spawn_blocking(scan_cache_targets_sync)
@@ -95,10 +108,45 @@ pub async fn scan_cache_targets() -> Result<ScanResult, String> {
 }
 
 #[tauri::command]
-pub async fn clean_cache_target(id: String) -> Result<CleanResult, String> {
-    tauri::async_runtime::spawn_blocking(move || clean_cache_target_sync(&id))
+pub async fn clean_cache_target(app: tauri::AppHandle, id: String) -> Result<CleanResult, String> {
+    let history_dir = app.path().app_data_dir().ok();
+    tauri::async_runtime::spawn_blocking(move || {
+        let target_name = target_name_for(&id);
+        let result = clean_cache_target_sync(&id);
+        if let Some(history_dir) = history_dir {
+            let entry = history_entry_from_result(&id, target_name, &result);
+            if let Err(error) = append_cleanup_history(&history_dir, entry) {
+                eprintln!("无法写入清理历史：{error}");
+            }
+        }
+        result
+    })
+    .await
+    .map_err(|error| format!("清理任务异常：{error}"))?
+}
+
+#[tauri::command]
+pub async fn get_cleanup_history(
+    app: tauri::AppHandle,
+) -> Result<Vec<CleanupHistoryEntry>, String> {
+    let history_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("无法定位应用数据目录：{error}"))?;
+    tauri::async_runtime::spawn_blocking(move || read_cleanup_history(&history_dir))
         .await
-        .map_err(|error| format!("清理任务异常：{error}"))?
+        .map_err(|error| format!("读取清理历史异常：{error}"))?
+}
+
+#[tauri::command]
+pub async fn clear_cleanup_history(app: tauri::AppHandle) -> Result<(), String> {
+    let history_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("无法定位应用数据目录：{error}"))?;
+    tauri::async_runtime::spawn_blocking(move || clear_cleanup_history_sync(&history_dir))
+        .await
+        .map_err(|error| format!("清空清理历史异常：{error}"))?
 }
 
 fn scan_cache_targets_sync() -> Result<ScanResult, String> {
@@ -211,6 +259,82 @@ fn clean_cache_target_sync(id: &str) -> Result<CleanResult, String> {
         skipped_entries,
         message,
     })
+}
+
+fn target_name_for(id: &str) -> String {
+    target_specs()
+        .ok()
+        .and_then(|specs| {
+            specs
+                .into_iter()
+                .find(|spec| spec.id == id)
+                .map(|spec| spec.name.to_string())
+        })
+        .unwrap_or_else(|| id.to_string())
+}
+
+fn history_entry_from_result(
+    id: &str,
+    target_name: String,
+    result: &Result<CleanResult, String>,
+) -> CleanupHistoryEntry {
+    match result {
+        Ok(result) => CleanupHistoryEntry {
+            id: id.to_string(),
+            target_name,
+            status: "success".to_string(),
+            freed_bytes: result.freed_bytes,
+            skipped_entries: result.skipped_entries.clone(),
+            message: result.message.clone(),
+            created_at: now_timestamp(),
+        },
+        Err(message) => CleanupHistoryEntry {
+            id: id.to_string(),
+            target_name,
+            status: "failed".to_string(),
+            freed_bytes: 0,
+            skipped_entries: Vec::new(),
+            message: message.clone(),
+            created_at: now_timestamp(),
+        },
+    }
+}
+
+fn history_file(history_dir: &Path) -> PathBuf {
+    history_dir.join("cleanup-history.json")
+}
+
+fn read_cleanup_history(history_dir: &Path) -> Result<Vec<CleanupHistoryEntry>, String> {
+    let path = history_file(history_dir);
+    match fs::read(&path) {
+        Ok(contents) => serde_json::from_slice(&contents)
+            .map_err(|error| format!("清理历史文件格式无效：{error}")),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(error) => Err(io_error("读取清理历史", error)),
+    }
+}
+
+fn append_cleanup_history(history_dir: &Path, entry: CleanupHistoryEntry) -> Result<(), String> {
+    fs::create_dir_all(history_dir).map_err(|error| io_error("创建应用数据目录", error))?;
+    let path = history_file(history_dir);
+    let mut history = read_cleanup_history(history_dir)?;
+    history.insert(0, entry);
+    history.truncate(100);
+
+    let contents = serde_json::to_vec_pretty(&history)
+        .map_err(|error| format!("序列化清理历史失败：{error}"))?;
+    let temporary_path = history_dir.join("cleanup-history.tmp");
+    fs::write(&temporary_path, contents).map_err(|error| io_error("写入清理历史", error))?;
+    fs::rename(&temporary_path, &path).map_err(|error| io_error("保存清理历史", error))
+}
+
+fn clear_cleanup_history_sync(history_dir: &Path) -> Result<(), String> {
+    let path = history_file(history_dir);
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(io_error("清空清理历史", error)),
+    }
 }
 
 fn scan_one(spec: &TargetSpec, snapshot: &SystemSnapshot) -> CacheItem {
@@ -794,7 +918,14 @@ fn now_timestamp() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_mutating_pnpm_command, path_is_within};
+    use super::{
+        append_cleanup_history, clear_cleanup_history_sync, is_mutating_pnpm_command,
+        path_is_within, read_cleanup_history, CleanupHistoryEntry,
+    };
+    use std::{
+        env, fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     #[test]
     fn path_boundary_does_not_match_similar_prefix() {
@@ -808,5 +939,39 @@ mod tests {
         assert!(!is_mutating_pnpm_command("node pnpm.mjs dlx playwright"));
         assert!(is_mutating_pnpm_command("node pnpm.mjs install"));
         assert!(is_mutating_pnpm_command("pnpm store prune"));
+    }
+
+    #[test]
+    fn cleanup_history_keeps_the_latest_hundred_entries() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let history_dir = env::temp_dir().join(format!("dev-cache-cleaner-history-{unique}"));
+
+        for index in 0..101 {
+            append_cleanup_history(
+                &history_dir,
+                CleanupHistoryEntry {
+                    id: index.to_string(),
+                    target_name: "测试缓存".to_string(),
+                    status: "success".to_string(),
+                    freed_bytes: index,
+                    skipped_entries: Vec::new(),
+                    message: "清理完成".to_string(),
+                    created_at: index,
+                },
+            )
+            .unwrap();
+        }
+
+        let history = read_cleanup_history(&history_dir).unwrap();
+        assert_eq!(history.len(), 100);
+        assert_eq!(history.first().unwrap().id, "100");
+        assert_eq!(history.last().unwrap().id, "1");
+
+        clear_cleanup_history_sync(&history_dir).unwrap();
+        assert!(read_cleanup_history(&history_dir).unwrap().is_empty());
+        fs::remove_dir_all(history_dir).unwrap();
     }
 }

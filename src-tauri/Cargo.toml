@@ -1,6 +1,6 @@
 [package]
 name = "dev-cache-cleaner"
-version = "0.1.2"
+version = "0.1.3"
 description = "A safe macOS developer cache cleaner"
 authors = ["wangxiaobai"]
 edition = "2021"

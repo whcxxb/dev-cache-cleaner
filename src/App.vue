@@ -10,6 +10,7 @@ import {
   Code2,
   FolderArchive,
   HardDrive,
+  History,
   Info,
   LoaderCircle,
   Package,
@@ -23,6 +24,7 @@ import {
 
 type CacheState = "ready" | "partial" | "inUse" | "missing" | "unavailable";
 type CategoryId = "all" | "package" | "build" | "tool";
+type ActiveView = "cache" | "history";
 
 interface CacheItem {
   id: string;
@@ -54,6 +56,16 @@ interface CleanResult {
   message: string;
 }
 
+interface CleanupHistoryEntry {
+  id: string;
+  targetName: string;
+  status: "success" | "failed";
+  freedBytes: number;
+  skippedEntries: string[];
+  message: string;
+  createdAt: number;
+}
+
 const categories = [
   { id: "all" as const, label: "全部缓存", icon: markRaw(HardDrive) },
   { id: "package" as const, label: "包管理器", icon: markRaw(Package) },
@@ -63,9 +75,14 @@ const categories = [
 
 const items = ref<CacheItem[]>([]);
 const selectedCategory = ref<CategoryId>("all");
+const activeView = ref<ActiveView>("cache");
 const isScanning = ref(true);
 const cleaningId = ref<string | null>(null);
+const cleanupHistory = ref<CleanupHistoryEntry[]>([]);
+const isHistoryLoading = ref(false);
+const isClearingHistory = ref(false);
 const scanError = ref("");
+const historyError = ref("");
 const scannedAt = ref(0);
 const selectedItem = ref<CacheItem | null>(null);
 const confirmDialog = ref<HTMLDialogElement | null>(null);
@@ -110,6 +127,16 @@ function formatTime(timestamp: number) {
   }).format(new Date(timestamp * 1000));
 }
 
+function formatDateTime(timestamp: number) {
+  if (!timestamp) return "未知时间";
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(timestamp * 1000));
+}
+
 function stateLabel(state: CacheState) {
   return {
     ready: "可清理",
@@ -138,6 +165,10 @@ function itemIcon(category: CacheItem["category"]) {
   }[category];
 }
 
+function historyStatusLabel(status: CleanupHistoryEntry["status"]) {
+  return status === "success" ? "已完成" : "未完成";
+}
+
 async function scan(showLoading = true) {
   if (showLoading) isScanning.value = true;
   scanError.value = "";
@@ -149,6 +180,41 @@ async function scan(showLoading = true) {
     scanError.value = normalizeError(error);
   } finally {
     isScanning.value = false;
+  }
+}
+
+async function loadCleanupHistory() {
+  isHistoryLoading.value = true;
+  historyError.value = "";
+  try {
+    cleanupHistory.value = await invoke<CleanupHistoryEntry[]>("get_cleanup_history");
+  } catch (error) {
+    historyError.value = normalizeError(error);
+  } finally {
+    isHistoryLoading.value = false;
+  }
+}
+
+async function openHistory() {
+  activeView.value = "history";
+  await loadCleanupHistory();
+}
+
+function openCacheView() {
+  activeView.value = "cache";
+}
+
+async function clearCleanupHistory() {
+  if (!cleanupHistory.value.length || isClearingHistory.value) return;
+  isClearingHistory.value = true;
+  try {
+    await invoke("clear_cleanup_history");
+    cleanupHistory.value = [];
+    showToast("success", "清理历史已清空");
+  } catch (error) {
+    showToast("error", normalizeError(error));
+  } finally {
+    isClearingHistory.value = false;
   }
 }
 
@@ -183,6 +249,7 @@ async function cleanSelected() {
     showToast("error", normalizeError(error));
   } finally {
     cleaningId.value = null;
+    void loadCleanupHistory();
   }
 }
 
@@ -200,7 +267,10 @@ function showToast(type: "success" | "error", message: string) {
   }, 4200);
 }
 
-onMounted(() => scan());
+onMounted(() => {
+  void scan();
+  void loadCleanupHistory();
+});
 </script>
 
 <template>
@@ -221,15 +291,28 @@ onMounted(() => scan());
           v-for="category in categories"
           :key="category.id"
           class="category-button"
-          :class="{ active: selectedCategory === category.id }"
+          :class="{ active: activeView === 'cache' && selectedCategory === category.id }"
           type="button"
-          @click="selectedCategory = category.id"
+          @click="selectedCategory = category.id; openCacheView()"
         >
           <component :is="category.icon" :size="16" :stroke-width="1.8" />
           <span>{{ category.label }}</span>
           <span class="category-count">{{ categoryCount(category.id) }}</span>
         </button>
       </nav>
+
+      <div class="sidebar-separator" />
+
+      <button
+        class="category-button history-navigation"
+        :class="{ active: activeView === 'history' }"
+        type="button"
+        @click="openHistory()"
+      >
+        <History :size="16" :stroke-width="1.8" />
+        <span>清理记录</span>
+        <span class="category-count">{{ cleanupHistory.length }}</span>
+      </button>
 
       <div class="safety-note">
         <ShieldCheck :size="17" :stroke-width="1.8" />
@@ -243,16 +326,21 @@ onMounted(() => scan());
     <main class="main-panel">
       <header class="toolbar">
         <div>
-          <h1>{{ categories.find((item) => item.id === selectedCategory)?.label }}</h1>
-          <p>{{ isScanning ? "正在读取磁盘占用" : `上次扫描 ${formatTime(scannedAt)}` }}</p>
+          <h1>{{ activeView === "cache" ? categories.find((item) => item.id === selectedCategory)?.label : "清理记录" }}</h1>
+          <p v-if="activeView === 'cache'">{{ isScanning ? "正在读取磁盘占用" : `上次扫描 ${formatTime(scannedAt)}` }}</p>
+          <p v-else>保留最近 100 次清理尝试，包含失败原因和已释放空间。</p>
         </div>
-        <button class="secondary-button" type="button" :disabled="isScanning" @click="scan()">
+        <button v-if="activeView === 'cache'" class="secondary-button" type="button" :disabled="isScanning" @click="scan()">
           <RefreshCw :class="{ spinning: isScanning }" :size="16" :stroke-width="1.8" />
           重新扫描
         </button>
+        <button v-else class="secondary-button" type="button" :disabled="isHistoryLoading" @click="loadCleanupHistory()">
+          <RefreshCw :class="{ spinning: isHistoryLoading }" :size="16" :stroke-width="1.8" />
+          刷新记录
+        </button>
       </header>
 
-      <section class="summary-strip" aria-label="扫描摘要">
+      <section v-if="activeView === 'cache'" class="summary-strip" aria-label="扫描摘要">
         <div class="summary-primary">
           <span>当前可安全清理</span>
           <strong>{{ formatBytes(reclaimableBytes) }}</strong>
@@ -273,7 +361,7 @@ onMounted(() => scan());
         </dl>
       </section>
 
-      <section class="content-section" aria-live="polite">
+      <section v-if="activeView === 'cache'" class="content-section" aria-live="polite">
         <div class="section-heading">
           <div>
             <h2>缓存项目</h2>
@@ -349,6 +437,75 @@ onMounted(() => scan());
                 <Trash2 v-else :size="15" :stroke-width="1.9" />
                 清理
               </button>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section v-else class="content-section history-section" aria-live="polite">
+        <div class="section-heading">
+          <div>
+            <h2>操作历史</h2>
+            <p>仅记录本机通过 DevCacheCleaner 发起的清理操作。</p>
+          </div>
+          <button
+            class="secondary-button clear-history-button"
+            type="button"
+            :disabled="!cleanupHistory.length || isClearingHistory"
+            @click="clearCleanupHistory()"
+          >
+            <LoaderCircle v-if="isClearingHistory" class="spinning" :size="15" :stroke-width="1.9" />
+            <Trash2 v-else :size="15" :stroke-width="1.9" />
+            清空记录
+          </button>
+        </div>
+
+        <div v-if="isHistoryLoading && !cleanupHistory.length" class="loading-list" aria-label="正在读取清理记录">
+          <div v-for="index in 4" :key="index" class="skeleton-row">
+            <span class="skeleton-icon" />
+            <span class="skeleton-copy" />
+            <span class="skeleton-size" />
+          </div>
+        </div>
+
+        <div v-else-if="historyError" class="message-state error-state">
+          <CircleAlert :size="24" :stroke-width="1.8" />
+          <div>
+            <h3>无法读取清理记录</h3>
+            <p>{{ historyError }}</p>
+          </div>
+          <button class="secondary-button" type="button" @click="loadCleanupHistory()">重试</button>
+        </div>
+
+        <div v-else-if="!cleanupHistory.length" class="message-state">
+          <History :size="24" :stroke-width="1.8" />
+          <div>
+            <h3>暂无清理记录</h3>
+            <p>完成一次清理后，会在这里保留操作结果与日志。</p>
+          </div>
+        </div>
+
+        <div v-else class="history-list">
+          <article v-for="entry in cleanupHistory" :key="`${entry.createdAt}-${entry.id}`" class="history-row">
+            <div class="history-icon" :class="`history-icon-${entry.status}`" aria-hidden="true">
+              <Check v-if="entry.status === 'success'" :size="17" :stroke-width="2" />
+              <X v-else :size="17" :stroke-width="2" />
+            </div>
+            <div class="history-content">
+              <div class="history-title-line">
+                <h3>{{ entry.targetName }}</h3>
+                <span class="status" :class="`status-${entry.status === 'success' ? 'ready' : 'unavailable'}`">
+                  {{ historyStatusLabel(entry.status) }}
+                </span>
+              </div>
+              <p>{{ entry.message }}</p>
+              <p v-if="entry.skippedEntries.length" class="history-detail">
+                已保留 {{ entry.skippedEntries.length }} 个正在使用的条目
+              </p>
+            </div>
+            <div class="history-meta">
+              <strong>{{ entry.status === "success" ? `释放 ${formatBytes(entry.freedBytes)}` : "未释放空间" }}</strong>
+              <time :datetime="new Date(entry.createdAt * 1000).toISOString()">{{ formatDateTime(entry.createdAt) }}</time>
             </div>
           </article>
         </div>
