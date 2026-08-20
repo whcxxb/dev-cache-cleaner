@@ -17,6 +17,9 @@ importers:
       '@tauri-apps/plugin-opener':
         specifier: ^2
         version: 2.5.4
+      simple-icons:
+        specifier: ^16.28.0
+        version: 16.28.0
       vue:
         specifier: ^3.5.13
         version: 3.5.41(typescript@5.6.2)
@@ -582,6 +585,10 @@ packages:
     engines: {node: '>=10'}
     hasBin: true
 
+  simple-icons@16.28.0:
+    resolution: {integrity: sha512-sQPR5AtK/ijRjou7zw7mlLp08oB6FH7i0lOy5XJ2zp9mJs/yejgiOn7KvQoe2q4YJIx6VmgUSW5AOefebPt5kg==}
+    engines: {node: '>=0.12.18'}
+
   source-map-js@1.2.1:
     resolution: {integrity: sha512-UXWMKhLOwVKb728IUtQPXxfYU+usdybtUrK/8uGE8CQMvrhOpwvzDBwj0QhSL7MQc7vIsISBG8VQ8+IDQxpfQA==}
     engines: {node: '>=0.10.0'}
@@ -1080,6 +1087,8 @@ snapshots:
       fsevents: 2.3.3
 
   semver@7.8.5: {}
+
+  simple-icons@16.28.0: {}
 
   source-map-js@1.2.1: {}
 
