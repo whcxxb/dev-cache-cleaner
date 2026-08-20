@@ -1,6 +1,6 @@
-# DevCacheCleaner
+# DevTidy
 
-A safety-focused macOS utility for scanning and cleaning regenerable development caches. The interface is built with Vue 3, while disk scanning, process-usage checks, and cleanup run in the Tauri 2 Rust layer.
+DevTidy is a macOS utility for cleaning regenerable development caches, managing local developer-tool prompts, and checking tool versions. The interface is built with Vue 3, while disk scanning, prompt-file management, and system checks run in the Tauri 2 Rust layer.
 
 [简体中文](#简体中文)
 
@@ -8,12 +8,12 @@ A safety-focused macOS utility for scanning and cleaning regenerable development
 
 The current release provides a DMG for Apple Silicon Macs (M-series chips).
 
-1. Download the DMG and drag `DevCacheCleaner.app` into Applications.
+1. Download the DMG and drag `DevTidy.app` into Applications.
 2. If macOS blocks the first launch, Control-click the app in Finder, choose Open, and confirm.
 3. If macOS still reports that the app is damaged, run the following command and open it again:
 
 ```bash
-xattr -cr "/Applications/DevCacheCleaner.app"
+xattr -cr "/Applications/DevTidy.app"
 ```
 
 This developer build uses ad-hoc signing. It is intended for developers and users familiar with macOS security prompts; it is not Developer ID signed or notarized.
@@ -68,12 +68,12 @@ The macOS DMG is generated in `src-tauri/target/release/bundle/dmg/`.
 
 当前 Release 提供适用于 Apple Silicon（M 系列芯片）的 DMG 安装包。
 
-1. 下载 DMG 并将 `DevCacheCleaner.app` 拖入“应用程序”目录。
+1. 下载 DMG 并将 `DevTidy.app` 拖入“应用程序”目录。
 2. 首次启动如被 macOS 拦截，可在 Finder 中按住 Control 点击应用，选择“打开”并确认。
 3. 若仍提示应用已损坏，请在终端执行以下命令后重新打开：
 
 ```bash
-xattr -cr "/Applications/DevCacheCleaner.app"
+xattr -cr "/Applications/DevTidy.app"
 ```
 
 此开发者版采用 ad-hoc 签名，适合开发者和熟悉 macOS 安全提示的用户，尚未使用 Apple Developer ID 签名或公证。
