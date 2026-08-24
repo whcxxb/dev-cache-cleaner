@@ -44,6 +44,28 @@ interface ToolUpdateInfo { id: string; name: string; installed: boolean; current
 
 interface ToolBrandAsset { src?: string; path?: string; }
 
+const scanSnapshotKey = "devtidy.cache-scan.v1";
+
+function readScanSnapshot(): ScanResult | null {
+  try {
+    const value = window.localStorage.getItem(scanSnapshotKey);
+    if (!value) return null;
+    const snapshot = JSON.parse(value) as Partial<ScanResult>;
+    if (!Array.isArray(snapshot.items) || typeof snapshot.scannedAt !== "number") return null;
+    return snapshot as ScanResult;
+  } catch {
+    return null;
+  }
+}
+
+function persistScanSnapshot(snapshot: ScanResult) {
+  try {
+    window.localStorage.setItem(scanSnapshotKey, JSON.stringify(snapshot));
+  } catch {
+    // 扫描结果仍可在当前会话使用，本地存储不可用时不阻塞清理功能。
+  }
+}
+
 const categories = [
   { id: "all" as const, label: "全部缓存", icon: markRaw(HardDrive) },
   { id: "package" as const, label: "包管理器", icon: markRaw(Package) },
@@ -62,18 +84,19 @@ const toolBrandAssets: Record<string, ToolBrandAsset> = {
 
 function toolBrand(id: string): ToolBrandAsset { return toolBrandAssets[id] ?? {}; }
 
-const items = ref<CacheItem[]>([]);
+const cachedScan = readScanSnapshot();
+const items = ref<CacheItem[]>(cachedScan?.items ?? []);
 const selectedCategory = ref<CategoryId>("all");
 const activeView = ref<ActiveView>("home");
 const isScanning = ref(false);
-const hasScanned = ref(false);
+const hasScanned = ref(Boolean(cachedScan));
 const cleaningId = ref<string | null>(null);
 const cleanupHistory = ref<CleanupHistoryEntry[]>([]);
 const isHistoryLoading = ref(false);
 const isClearingHistory = ref(false);
 const scanError = ref("");
 const historyError = ref("");
-const scannedAt = ref(0);
+const scannedAt = ref(cachedScan?.scannedAt ?? 0);
 const selectedItem = ref<CacheItem | null>(null);
 const confirmDialog = ref<HTMLDialogElement | null>(null);
 const promptEnableDialog = ref<HTMLDialogElement | null>(null);
@@ -120,7 +143,7 @@ function updateStatusLabel(status: ToolUpdateInfo["status"]) { return { latest: 
 function normalizeError(error: unknown) { return typeof error === "string" ? error : error instanceof Error ? error.message : "操作失败，请稍后重试"; }
 function showToast(type: "success" | "error", message: string) { toast.value = { type, message }; if (toastTimer) window.clearTimeout(toastTimer); toastTimer = window.setTimeout(() => { toast.value = null; }, 4200); }
 
-async function scan() { isScanning.value = true; scanError.value = ""; try { const result = await invoke<ScanResult>("scan_cache_targets"); items.value = result.items; scannedAt.value = result.scannedAt; hasScanned.value = true; } catch (error) { scanError.value = normalizeError(error); } finally { isScanning.value = false; } }
+async function scan() { isScanning.value = true; scanError.value = ""; try { const result = await invoke<ScanResult>("scan_cache_targets"); items.value = result.items; scannedAt.value = result.scannedAt; hasScanned.value = true; persistScanSnapshot(result); } catch (error) { scanError.value = normalizeError(error); } finally { isScanning.value = false; } }
 async function loadCleanupHistory() { isHistoryLoading.value = true; historyError.value = ""; try { cleanupHistory.value = await invoke<CleanupHistoryEntry[]>("get_cleanup_history"); } catch (error) { historyError.value = normalizeError(error); } finally { isHistoryLoading.value = false; } }
 function openHome() { activeView.value = "home"; }
 function openCacheView(category?: CategoryId) { if (category) selectedCategory.value = category; activeView.value = "cache"; if (!hasScanned.value) void scan(); }
@@ -128,7 +151,7 @@ async function openHistory() { activeView.value = "history"; await loadCleanupHi
 async function clearCleanupHistory() { if (!cleanupHistory.value.length || isClearingHistory.value) return; isClearingHistory.value = true; try { await invoke("clear_cleanup_history"); cleanupHistory.value = []; showToast("success", "清理历史已清空"); } catch (error) { showToast("error", normalizeError(error)); } finally { isClearingHistory.value = false; } }
 function openConfirm(item: CacheItem) { if (!item.canClean || cleaningId.value) return; selectedItem.value = item; nextTick(() => confirmDialog.value?.showModal()); }
 function closeConfirm() { if (cleaningId.value) return; confirmDialog.value?.close(); selectedItem.value = null; }
-async function cleanSelected() { const target = selectedItem.value; if (!target || cleaningId.value) return; cleaningId.value = target.id; try { const result = await invoke<CleanResult>("clean_cache_target", { id: target.id }); const current = items.value.find((item) => item.id === result.id); if (current) { current.sizeBytes = result.remainingBytes; current.canClean = result.remainingBytes > 0; current.state = result.skippedEntries.length ? "partial" : "ready"; } confirmDialog.value?.close(); selectedItem.value = null; showToast("success", `已释放 ${formatBytes(result.freedBytes)}`); } catch (error) { showToast("error", normalizeError(error)); } finally { cleaningId.value = null; void loadCleanupHistory(); } }
+async function cleanSelected() { const target = selectedItem.value; if (!target || cleaningId.value) return; cleaningId.value = target.id; try { const result = await invoke<CleanResult>("clean_cache_target", { id: target.id }); const current = items.value.find((item) => item.id === result.id); if (current) { current.sizeBytes = result.remainingBytes; current.canClean = result.remainingBytes > 0; current.state = result.skippedEntries.length ? "partial" : "ready"; } persistScanSnapshot({ items: items.value, totalBytes: totalBytes.value, reclaimableBytes: reclaimableBytes.value, scannedAt: scannedAt.value }); confirmDialog.value?.close(); selectedItem.value = null; showToast("success", `已释放 ${formatBytes(result.freedBytes)}`); } catch (error) { showToast("error", normalizeError(error)); } finally { cleaningId.value = null; void loadCleanupHistory(); } }
 
 async function loadPromptTool() { const tool = selectedPromptTool.value; if (!tool) return; isPromptLoading.value = true; promptError.value = ""; try { toolPrompt.value = await invoke<ToolPromptContent>("read_tool_prompt", { toolId: tool.id, fileName: selectedGrokFile.value }); } catch (error) { toolPrompt.value = null; promptError.value = normalizeError(error); } finally { isPromptLoading.value = false; } }
 async function loadPromptManager() { isPromptLoading.value = true; promptError.value = ""; try { const state = await invoke<PromptManagerState>("get_prompt_manager_state"); promptManager.value = state; globalPrompt.value = state.global.content; if (!state.tools.some((tool) => tool.id === selectedPromptToolId.value)) selectedPromptToolId.value = state.tools[0]?.id ?? ""; await loadPromptTool(); } catch (error) { promptError.value = normalizeError(error); } finally { isPromptLoading.value = false; } }
@@ -148,9 +171,9 @@ async function toggleToolGlobal() { const tool = selectedPromptTool.value; if (!
 <template>
   <div class="app-shell" :class="{ 'home-shell': activeView === 'home' }">
     <aside v-if="activeView !== 'home'" class="sidebar" aria-label="功能导航">
-      <button class="brand brand-button" type="button" @click="openHome"><span class="brand-mark" aria-hidden="true"><ShieldCheck :size="18" :stroke-width="1.8" /></span><span><strong>DevTidy</strong><small>返回功能首页</small></span></button>
+      <button class="brand brand-button" type="button" @click="openHome"><span class="brand-mark" aria-hidden="true"><img src="/devtidy-icon.png" alt="" /></span><span><strong>DevTidy</strong><small>返回功能首页</small></span></button>
       <button class="back-home-button" type="button" @click="openHome"><ArrowLeft :size="16" :stroke-width="1.8" />返回首页</button>
-      <div v-if="activeView === 'cache'" class="cache-nav"><span>垃圾清理</span><button v-for="category in categories" :key="category.id" class="category-button" :class="{ active: selectedCategory === category.id }" type="button" @click="openCacheView(category.id)"><component :is="category.icon" :size="15" :stroke-width="1.8" /><span>{{ category.label }}</span><span class="category-count">{{ categoryCount(category.id) }}</span></button><button class="category-button" type="button" @click="openHistory"><History :size="15" :stroke-width="1.8" /><span>清理记录</span><span class="category-count">{{ cleanupHistory.length }}</span></button></div>
+      <div v-if="activeView === 'cache'" class="cache-nav"><span class="cache-nav-title">分类</span><button v-for="category in categories" :key="category.id" class="category-button" :class="{ active: selectedCategory === category.id }" type="button" @click="openCacheView(category.id)"><span class="category-icon" aria-hidden="true"><component :is="category.icon" :size="16" :stroke-width="1.8" /></span><span class="category-label">{{ category.label }}</span><span class="category-count">{{ categoryCount(category.id) }}</span></button><button class="category-button history-category-button" type="button" @click="openHistory"><span class="category-icon" aria-hidden="true"><History :size="16" :stroke-width="1.8" /></span><span class="category-label">清理记录</span><span class="category-count">{{ cleanupHistory.length }}</span></button></div>
       <div v-else class="secondary-nav-label"><Settings2 :size="16" :stroke-width="1.8" /><span>{{ viewTitle }}</span></div>
       <div class="safety-note"><ShieldCheck :size="17" :stroke-width="1.8" /><div><strong>安全边界已启用</strong><p>操作前会检查本机状态与固定白名单。</p></div></div>
     </aside>
