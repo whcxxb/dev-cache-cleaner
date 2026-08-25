@@ -23,14 +23,38 @@ enum CleanupMode {
 
 #[derive(Clone, Debug)]
 struct TargetSpec {
-    id: &'static str,
-    name: &'static str,
+    id: String,
+    name: String,
     category: &'static str,
-    description: &'static str,
-    cleanup_note: &'static str,
+    description: String,
+    cleanup_note: String,
     paths: Vec<PathBuf>,
     process_terms: Vec<String>,
     mode: CleanupMode,
+}
+
+impl TargetSpec {
+    fn new(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        category: &'static str,
+        description: impl Into<String>,
+        cleanup_note: impl Into<String>,
+        paths: Vec<PathBuf>,
+        process_terms: Vec<String>,
+        mode: CleanupMode,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            category,
+            description: description.into(),
+            cleanup_note: cleanup_note.into(),
+            paths,
+            process_terms,
+            mode,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -504,16 +528,59 @@ fn remove_entry(path: &Path, allowed_root: &Path) -> Result<(), String> {
     if metadata.file_type().is_symlink() || metadata.is_file() {
         fs::remove_file(path).map_err(|error| io_error("删除缓存文件", error))
     } else if metadata.is_dir() {
-        fs::remove_dir_all(path).map_err(|error| io_error("删除缓存目录", error))
+        force_remove_dir_all(path).map_err(|error| io_error("删除缓存目录", error))
     } else {
         fs::remove_file(path).map_err(|error| io_error("删除特殊缓存文件", error))
     }
 }
+fn force_remove_dir_all(path: &Path) -> io::Result<()> {
+    if let Err(err) = fs::remove_dir_all(path) {
+        if err.kind() == io::ErrorKind::PermissionDenied {
+            set_writable_recursive(path)?;
+            fs::remove_dir_all(path)
+        } else {
+            Err(err)
+        }
+    } else {
+        Ok(())
+    }
+}
+
+fn set_writable_recursive(path: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(metadata) = fs::symlink_metadata(path) {
+            if metadata.file_type().is_symlink() {
+                return Ok(());
+            }
+            let mut permissions = metadata.permissions();
+            let mode = permissions.mode();
+            if mode & 0o200 == 0 {
+                permissions.set_mode(mode | 0o700);
+                let _ = fs::set_permissions(path, permissions);
+            }
+            if metadata.is_dir() {
+                if let Ok(entries) = fs::read_dir(path) {
+                    for entry in entries.flatten() {
+                        let _ = set_writable_recursive(&entry.path());
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 
 fn ensure_allowed_root(path: &Path) -> Result<(), String> {
     let home = home_dir()?;
+    if path == Path::new("/") || path == home || !path.starts_with(&home) {
+        return Err("路径安全校验失败，操作已拒绝".to_string());
+    }
+    let trash = home.join(".Trash");
     let component_count = path.components().count();
-    if path == Path::new("/") || path == home || !path.starts_with(&home) || component_count < 5 {
+    if path != trash && component_count < 5 {
         return Err("路径安全校验失败，操作已拒绝".to_string());
     }
     Ok(())
@@ -651,189 +718,629 @@ fn capture_open_files() -> Vec<OpenFile> {
     files
 }
 
-fn target_specs() -> Result<Vec<TargetSpec>, String> {
-    let home = home_dir()?;
+fn static_target_specs(home: &Path) -> Result<Vec<TargetSpec>, String> {
     let cache = |path: &str| home.join("Library/Caches").join(path);
     let home_path = |path: &str| home.join(path);
 
     Ok(vec![
-        TargetSpec {
-            id: "uv-cache",
-            name: "uv Python 缓存",
-            category: CATEGORY_PACKAGE,
-            description: "Python 包下载与解压缓存，可按需重新生成。",
-            cleanup_note: "不会删除虚拟环境或项目依赖。",
-            paths: vec![home_path(".cache/uv")],
-            process_terms: vec![" uv sync".into(), " uv pip".into(), "/uv ".into()],
-            mode: CleanupMode::RemoveContents,
-        },
-        TargetSpec {
-            id: "npm-cache",
-            name: "npm 与 npx 缓存",
-            category: CATEGORY_PACKAGE,
-            description: "npm 包缓存与 npx 临时执行目录。",
-            cleanup_note: "不会删除全局包或项目 node_modules。",
-            paths: vec![home_path(".npm/_cacache"), home_path(".npm/_npx")],
-            process_terms: vec![
+        // ==================== Package Managers ====================
+        TargetSpec::new(
+            "uv-cache",
+            "uv Python 缓存",
+            CATEGORY_PACKAGE,
+            "Python 包下载与解压缓存，可按需重新生成。",
+            "不会删除虚拟环境或项目依赖。",
+            vec![home_path(".cache/uv")],
+            vec![" uv sync".into(), " uv pip".into(), "/uv ".into()],
+            CleanupMode::RemoveContents,
+        ),
+        TargetSpec::new(
+            "npm-cache",
+            "npm 与 npx 缓存",
+            CATEGORY_PACKAGE,
+            "npm 包缓存与 npx 临时执行目录。",
+            "不会删除全局包或项目 node_modules。",
+            vec![home_path(".npm/_cacache"), home_path(".npm/_npx")],
+            vec![
                 "npm-cli.js".into(),
                 "npx-cli.js".into(),
                 "/.npm/_npx/".into(),
             ],
-            mode: CleanupMode::RemoveRoots,
-        },
-        TargetSpec {
-            id: "pnpm-cache",
-            name: "pnpm 元数据与 dlx 缓存",
-            category: CATEGORY_PACKAGE,
-            description: "包元数据和临时执行缓存，正在使用的 dlx 条目会保留。",
-            cleanup_note: "不会删除 pnpm store 或项目依赖。",
-            paths: vec![cache("pnpm")],
-            process_terms: vec!["pnpm.mjs dlx".into(), "/caches/pnpm/".into()],
-            mode: CleanupMode::PnpmCache,
-        },
-        TargetSpec {
-            id: "pnpm-store",
-            name: "pnpm 未引用包",
-            category: CATEGORY_PACKAGE,
-            description: "通过 pnpm store prune 仅裁剪未被项目引用的包。",
-            cleanup_note: "保留仍被项目链接的内容。",
-            paths: vec![home_path("Library/pnpm/store/v11")],
-            process_terms: vec![
+            CleanupMode::RemoveRoots,
+        ),
+        TargetSpec::new(
+            "pnpm-cache",
+            "pnpm 元数据与 dlx 缓存",
+            CATEGORY_PACKAGE,
+            "包元数据和临时执行缓存，正在使用的 dlx 条目会保留。",
+            "不会删除 pnpm store 或项目依赖。",
+            vec![cache("pnpm")],
+            vec!["pnpm.mjs dlx".into(), "/caches/pnpm/".into()],
+            CleanupMode::PnpmCache,
+        ),
+        TargetSpec::new(
+            "pnpm-store",
+            "pnpm 未引用包",
+            CATEGORY_PACKAGE,
+            "通过 pnpm store prune 仅裁剪未被项目引用的包。",
+            "保留仍被项目链接的内容。",
+            vec![
+                home_path("Library/pnpm/store/v11"),
+                home_path("Library/pnpm/store/v3"),
+            ],
+            vec![
                 "pnpm.mjs install".into(),
                 "pnpm.mjs add".into(),
                 "pnpm.mjs update".into(),
                 "pnpm.mjs remove".into(),
             ],
-            mode: CleanupMode::PnpmStorePrune,
-        },
-        TargetSpec {
-            id: "pts-business-cache",
-            name: "pts-business 构建缓存",
-            category: CATEGORY_BUILD,
-            description: "Umi MFSU 与 Webpack 的本地构建缓存。",
-            cleanup_note: "保留 node_modules；首次启动会重新构建缓存。",
-            paths: vec![home_path("Desktop/code/pts-business/node_modules/.cache")],
-            process_terms: vec!["/desktop/code/pts-business/".into()],
-            mode: CleanupMode::RemoveRoots,
-        },
-        TargetSpec {
-            id: "reimux-tauri-target",
-            name: "reimux-tools Tauri 产物",
-            category: CATEGORY_BUILD,
-            description: "Rust debug 与 release 编译产物。",
-            cleanup_note: "不删除源码；下次构建会重新编译。",
-            paths: vec![home_path("Desktop/code/reimux-tools/src-tauri/target")],
-            process_terms: vec!["/desktop/code/reimux-tools/".into()],
-            mode: CleanupMode::RemoveRoots,
-        },
-        TargetSpec {
-            id: "xcode-derived-data",
-            name: "Xcode DerivedData",
-            category: CATEGORY_BUILD,
-            description: "Xcode 索引、中间文件与项目构建缓存。",
-            cleanup_note: "不删除项目；下次构建与索引耗时会增加。",
-            paths: vec![home_path("Library/Developer/Xcode/DerivedData")],
-            process_terms: vec!["/applications/xcode.app/".into(), "xcodebuild".into()],
-            mode: CleanupMode::RemoveContents,
-        },
-        TargetSpec {
-            id: "gradle-cache",
-            name: "Gradle 构建缓存",
-            category: CATEGORY_BUILD,
-            description: "Android 与 JVM 项目的依赖和编译缓存。",
-            cleanup_note: "不会删除项目；后续构建可能重新下载依赖。",
-            paths: vec![home_path(".gradle/caches")],
-            process_terms: vec![
+            CleanupMode::PnpmStorePrune,
+        ),
+        TargetSpec::new(
+            "yarn-cache",
+            "Yarn 缓存",
+            CATEGORY_PACKAGE,
+            "Yarn 的离线包与下载缓存。",
+            "不会删除项目 node_modules。",
+            vec![cache("Yarn"), home_path(".yarn/cache")],
+            vec!["/yarn ".into(), "yarn.js".into()],
+            CleanupMode::RemoveRoots,
+        ),
+        TargetSpec::new(
+            "bun-cache",
+            "Bun 包安装缓存",
+            CATEGORY_PACKAGE,
+            "Bun 包管理器下载的离线包与 install 缓存。",
+            "不会影响全局 Bun 运行时或项目 node_modules。",
+            vec![home_path(".bun/install/cache")],
+            vec!["bun install".into(), "bun add".into(), "bun pm".into()],
+            CleanupMode::RemoveContents,
+        ),
+        TargetSpec::new(
+            "cargo-cache",
+            "Cargo 依赖包与索引缓存",
+            CATEGORY_PACKAGE,
+            "Rust Cargo 下载的 crates.io 源码压缩包与 Git 检出库。",
+            "不删除 ~/.cargo/bin 全局程序或本地项目源码。",
+            vec![
+                home_path(".cargo/registry/cache"),
+                home_path(".cargo/git/db"),
+            ],
+            vec!["cargo ".into(), "rustc".into(), "cargo-clippy".into()],
+            CleanupMode::RemoveContents,
+        ),
+        TargetSpec::new(
+            "go-cache",
+            "Go 编译与模块下载缓存",
+            CATEGORY_PACKAGE,
+            "Go 编译构建缓存与已下载模块的只读压缩包。",
+            "不删除 GOPATH/bin 程序；后续构建按需重新下载编译。",
+            vec![
+                cache("go-build"),
+                home_path(".cache/go-build"),
+                home_path("go/pkg/mod/cache"),
+            ],
+            vec![
+                "go build".into(),
+                "go test".into(),
+                "go run".into(),
+                "go get".into(),
+                "gopls".into(),
+            ],
+            CleanupMode::RemoveContents,
+        ),
+        TargetSpec::new(
+            "pip-cache",
+            "pip 缓存",
+            CATEGORY_PACKAGE,
+            "Python pip 下载的 wheel 包与源码归档缓存。",
+            "不会删除已安装的全局或虚拟环境依赖。",
+            vec![cache("pip"), home_path(".cache/pip")],
+            vec!["pip install".into(), "pip download".into()],
+            CleanupMode::RemoveContents,
+        ),
+        TargetSpec::new(
+            "conda-cache",
+            "Conda 包下载归档",
+            CATEGORY_PACKAGE,
+            "Conda、Miniconda 与 Miniforge 的 tarball 压缩包与索引缓存。",
+            "不会删除任何已创建的虚拟环境。",
+            vec![
+                home_path(".conda/pkgs"),
+                home_path("miniconda3/pkgs"),
+                home_path("miniforge3/pkgs"),
+                home_path("anaconda3/pkgs"),
+            ],
+            vec!["conda ".into(), "mamba ".into(), "micromamba".into()],
+            CleanupMode::RemoveContents,
+        ),
+        TargetSpec::new(
+            "cocoapods-cache",
+            "CocoaPods 缓存",
+            CATEGORY_PACKAGE,
+            "CocoaPods 下载的 Pod 源码包与 Specs 索引缓存。",
+            "不会影响项目的 Pods 目录；再次 pod install 会按需拉取。",
+            vec![cache("CocoaPods")],
+            vec!["pod install".into(), "pod update".into(), "cocoapods".into()],
+            CleanupMode::RemoveContents,
+        ),
+        TargetSpec::new(
+            "homebrew-cache",
+            "Homebrew 下载缓存",
+            CATEGORY_PACKAGE,
+            "Homebrew 下载的 bottle 安装包、源码与 API 缓存。",
+            "不会卸载已安装的软件包。",
+            vec![cache("Homebrew/downloads"), cache("Homebrew")],
+            vec!["/brew ".into(), "homebrew".into()],
+            CleanupMode::RemoveContents,
+        ),
+        TargetSpec::new(
+            "maven-cache",
+            "Maven 依赖缓存",
+            CATEGORY_PACKAGE,
+            "Maven 本地仓库下载的 jar 依赖与元数据缓存。",
+            "构建时会根据 pom.xml 自动重新下载所需依赖。",
+            vec![home_path(".m2/repository")],
+            vec!["mvn ".into(), "maven".into(), "org.apache.maven".into()],
+            CleanupMode::RemoveContents,
+        ),
+        TargetSpec::new(
+            "composer-cache",
+            "Composer 缓存",
+            CATEGORY_PACKAGE,
+            "PHP Composer 下载的包归档与 VCS 缓存。",
+            "不会删除项目的 vendor 目录。",
+            vec![cache("composer"), home_path(".composer/cache")],
+            vec!["composer ".into()],
+            CleanupMode::RemoveContents,
+        ),
+        TargetSpec::new(
+            "gem-cache",
+            "Ruby Gem 与 Bundler 缓存",
+            CATEGORY_PACKAGE,
+            "RubyGems 规范索引与 Bundler 下载缓存。",
+            "不会删除已安装的全局 Gem 程序。",
+            vec![home_path(".gem/specs"), home_path(".bundle/cache")],
+            vec!["gem install".into(), "bundle install".into()],
+            CleanupMode::RemoveContents,
+        ),
+        TargetSpec::new(
+            "node-gyp-cache",
+            "node-gyp 原生模块构建缓存",
+            CATEGORY_PACKAGE,
+            "Node.js 编译原生 C/C++ 扩展时下载的 Node 头文件与 SDK 缓存。",
+            "不会影响已编译完成的项目 node_modules。",
+            vec![cache("node-gyp")],
+            vec!["node-gyp".into()],
+            CleanupMode::RemoveContents,
+        ),
+
+        // ==================== Build Caches ====================
+        TargetSpec::new(
+            "xcode-derived-data",
+            "Xcode DerivedData",
+            CATEGORY_BUILD,
+            "Xcode 索引、中间文件与项目构建缓存。",
+            "不删除项目；下次构建与索引耗时会增加。",
+            vec![home_path("Library/Developer/Xcode/DerivedData")],
+            vec!["/applications/xcode.app/".into(), "xcodebuild".into()],
+            CleanupMode::RemoveContents,
+        ),
+        TargetSpec::new(
+            "xcode-archives",
+            "Xcode 历史归档产物",
+            CATEGORY_BUILD,
+            "Xcode 生成的本地 xcarchive 打包归档文件。",
+            "仅清理本地打包归档历史，不影响线上已发布版本。",
+            vec![home_path("Library/Developer/Xcode/Archives")],
+            vec!["/applications/xcode.app/".into(), "xcodebuild".into()],
+            CleanupMode::RemoveContents,
+        ),
+        TargetSpec::new(
+            "ios-simulator-cache",
+            "iOS 模拟器运行时缓存",
+            CATEGORY_BUILD,
+            "CoreSimulator 生成的运行时镜像与临时数据缓存。",
+            "不会删除模拟器固件或已安装应用。",
+            vec![
+                home_path("Library/Developer/CoreSimulator/Caches"),
+                cache("com.apple.CoreSimulator"),
+            ],
+            vec![
+                "simulator.app".into(),
+                "coresimulatord".into(),
+                "xcode.app".into(),
+            ],
+            CleanupMode::RemoveContents,
+        ),
+        TargetSpec::new(
+            "gradle-cache",
+            "Gradle 构建缓存",
+            CATEGORY_BUILD,
+            "Android 与 JVM 项目的依赖和编译缓存。",
+            "不会删除项目；后续构建可能重新下载依赖。",
+            vec![home_path(".gradle/caches")],
+            vec![
                 "gradledaemon".into(),
                 "org.gradle".into(),
                 "/gradle ".into(),
             ],
-            mode: CleanupMode::RemoveContents,
-        },
-        TargetSpec {
-            id: "playwright-cache",
-            name: "Playwright 浏览器缓存",
-            category: CATEGORY_TOOL,
-            description: "Playwright 下载的 Chromium、Firefox 与 WebKit。",
-            cleanup_note: "测试时会重新下载所需浏览器。",
-            paths: vec![cache("ms-playwright"), cache("ms-playwright-go")],
-            process_terms: vec!["playwright".into(), "/ms-playwright/".into()],
-            mode: CleanupMode::RemoveRoots,
-        },
-        TargetSpec {
-            id: "wechat-devtools-cache",
-            name: "微信开发者工具缓存",
-            category: CATEGORY_TOOL,
-            description: "微信开发者工具的编译与运行缓存。",
-            cleanup_note: "不会删除小程序项目。",
-            paths: vec![cache("微信开发者工具")],
-            process_terms: vec!["wechatwebdevtools".into(), "微信开发者工具".into()],
-            mode: CleanupMode::RemoveContents,
-        },
-        TargetSpec {
-            id: "vscode-update-cache",
-            name: "VS Code 更新缓存",
-            category: CATEGORY_TOOL,
-            description: "VS Code ShipIt 下载与更新暂存文件。",
-            cleanup_note: "不会删除扩展、设置或工作区数据。",
-            paths: vec![cache("com.microsoft.VSCode.ShipIt")],
-            process_terms: vec!["visual studio code.app".into(), "code helper".into()],
-            mode: CleanupMode::RemoveRoots,
-        },
-        TargetSpec {
-            id: "codex-cache",
-            name: "Codex 应用缓存",
-            category: CATEGORY_TOOL,
-            description: "Codex 的可再生应用缓存。",
-            cleanup_note: "不清理任务、记忆、插件或日志数据库。",
-            paths: vec![cache("Codex")],
-            process_terms: vec!["/applications/codex.app/".into()],
-            mode: CleanupMode::RemoveContents,
-        },
-        TargetSpec {
-            id: "chrome-cache",
-            name: "Chrome 缓存",
-            category: CATEGORY_TOOL,
-            description: "Chrome 与相关 Google 组件的用户缓存。",
-            cleanup_note: "不会删除书签和浏览器配置，网页资源会重新加载。",
-            paths: vec![cache("Google")],
-            process_terms: vec![
+            CleanupMode::RemoveContents,
+        ),
+        TargetSpec::new(
+            "android-build-cache",
+            "Android SDK 与构建缓存",
+            CATEGORY_BUILD,
+            "Android Studio 与构建工具生成的缓存文件。",
+            "不会删除 Android SDK 核心工具或项目代码。",
+            vec![
+                home_path(".android/build-cache"),
+                home_path(".android/cache"),
+            ],
+            vec![
+                "studio.app".into(),
+                "android studio".into(),
+                "adb ".into(),
+            ],
+            CleanupMode::RemoveContents,
+        ),
+        TargetSpec::new(
+            "electron-builder-cache",
+            "Electron 二进制包缓存",
+            CATEGORY_BUILD,
+            "electron-builder 与打包工具预下载的各平台二进制。",
+            "不影响当前项目依赖，打包时按需重新拉取。",
+            vec![cache("electron"), cache("electron-builder")],
+            vec!["electron-builder".into(), "electron-forge".into()],
+            CleanupMode::RemoveContents,
+        ),
+        TargetSpec::new(
+            "turbo-cache",
+            "Turborepo 构建缓存",
+            CATEGORY_BUILD,
+            "Turborepo 生成的本地任务编译产物缓存。",
+            "下次执行 turbo build 会按需重新计算。",
+            vec![cache("turbo")],
+            vec!["turbo ".into(), "turborepo".into()],
+            CleanupMode::RemoveContents,
+        ),
+
+        // ==================== Tool Caches & Logs ====================
+        TargetSpec::new(
+            "playwright-cache",
+            "Playwright 浏览器缓存",
+            CATEGORY_TOOL,
+            "Playwright 下载的 Chromium、Firefox 与 WebKit。",
+            "测试时会重新下载所需浏览器。",
+            vec![cache("ms-playwright"), cache("ms-playwright-go")],
+            vec!["playwright".into(), "/ms-playwright/".into()],
+            CleanupMode::RemoveRoots,
+        ),
+        TargetSpec::new(
+            "cypress-cache",
+            "Cypress 测试运行环境",
+            CATEGORY_TOOL,
+            "Cypress 自动化测试框架下载的浏览器与二进制运行时缓存。",
+            "运行 cypress 时若缺失会自动重新下载。",
+            vec![cache("Cypress")],
+            vec!["cypress".into()],
+            CleanupMode::RemoveContents,
+        ),
+        TargetSpec::new(
+            "wechat-devtools-cache",
+            "微信开发者工具缓存",
+            CATEGORY_TOOL,
+            "微信开发者工具的编译与运行缓存。",
+            "不会删除小程序项目。",
+            vec![cache("微信开发者工具")],
+            vec!["wechatwebdevtools".into(), "微信开发者工具".into()],
+            CleanupMode::RemoveContents,
+        ),
+        TargetSpec::new(
+            "vscode-update-cache",
+            "VS Code 更新缓存",
+            CATEGORY_TOOL,
+            "VS Code ShipIt 下载与更新暂存文件。",
+            "不会删除扩展、设置或工作区数据。",
+            vec![cache("com.microsoft.VSCode.ShipIt")],
+            vec!["visual studio code.app".into(), "code helper".into()],
+            CleanupMode::RemoveRoots,
+        ),
+        TargetSpec::new(
+            "cursor-cache",
+            "Cursor 运行与更新缓存",
+            CATEGORY_TOOL,
+            "Cursor AI 编辑器的运行缓存与更新暂存文件。",
+            "不会删除扩展、设置、对话历史或工作区配置。",
+            vec![
+                cache("Cursor"),
+                cache("com.todesktop.230313mzl4w4u92"),
+                cache("com.todesktop.230313mzl4w4u92.ShipIt"),
+            ],
+            vec!["cursor.app".into(), "cursor helper".into()],
+            CleanupMode::RemoveContents,
+        ),
+        TargetSpec::new(
+            "claude-cache",
+            "Claude 桌面与 CLI 缓存",
+            CATEGORY_TOOL,
+            "Claude 客户端与 CLI 工具的临时运行缓存与更新暂存。",
+            "不会删除登录状态、对话记录或本地凭证配置。",
+            vec![
+                cache("com.anthropic.claudefordesktop"),
+                cache("com.anthropic.claudefordesktop.ShipIt"),
+                home_path(".claude/cache"),
+            ],
+            vec!["claude.app".into(), "claude helper".into()],
+            CleanupMode::RemoveContents,
+        ),
+        TargetSpec::new(
+            "codex-cache",
+            "Codex 应用缓存",
+            CATEGORY_TOOL,
+            "Codex 的可再生应用缓存。",
+            "不清理任务、记忆、插件或日志数据库。",
+            vec![cache("Codex")],
+            vec!["/applications/codex.app/".into()],
+            CleanupMode::RemoveContents,
+        ),
+        TargetSpec::new(
+            "docker-cache",
+            "Docker 与容器管理工具缓存",
+            CATEGORY_TOOL,
+            "Docker BuildX 缓存及 Docker Desktop / OrbStack 日志与诊断缓存。",
+            "不会删除容器镜像、数据卷或运行中的容器。",
+            vec![
+                home_path(".docker/buildx/cache"),
+                cache("com.docker.docker"),
+                cache("dev.kdrag0n.MacVirt"),
+            ],
+            vec![
+                "docker.app".into(),
+                "com.docker".into(),
+                "orbstack".into(),
+            ],
+            CleanupMode::RemoveContents,
+        ),
+        TargetSpec::new(
+            "jetbrains-cache",
+            "JetBrains IDE 索引与缓存",
+            CATEGORY_TOOL,
+            "IntelliJ IDEA、WebStorm、PyCharm、GoLand 等 IDE 的本地索引与临时缓存。",
+            "不会删除插件、配置或项目源码；下次打开项目会自动重建索引。",
+            vec![cache("JetBrains")],
+            vec![
+                "idea.app".into(),
+                "webstorm.app".into(),
+                "pycharm.app".into(),
+                "goland.app".into(),
+                "clion.app".into(),
+                "datagrip.app".into(),
+                "fleet.app".into(),
+            ],
+            CleanupMode::RemoveContents,
+        ),
+        TargetSpec::new(
+            "postman-cache",
+            "API 调试工具缓存",
+            CATEGORY_TOOL,
+            "Postman 与 Apifox 等工具的临时运行日志与请求缓存。",
+            "不会删除接口集合、环境变量或本地保存的 API 数据。",
+            vec![cache("com.postmanlabs.mac"), cache("cn.apifox.app")],
+            vec![
+                "postman.app".into(),
+                "postman helper".into(),
+                "apifox.app".into(),
+                "apifox helper".into(),
+            ],
+            CleanupMode::RemoveContents,
+        ),
+        TargetSpec::new(
+            "chrome-cache",
+            "Chrome 缓存",
+            CATEGORY_TOOL,
+            "Chrome 与相关 Google 组件的用户缓存。",
+            "不会删除书签和浏览器配置，网页资源会重新加载。",
+            vec![cache("Google")],
+            vec![
                 "/applications/google chrome.app/".into(),
                 "google chrome helper".into(),
             ],
-            mode: CleanupMode::RemoveContents,
-        },
-        TargetSpec {
-            id: "homebrew-cache",
-            name: "Homebrew 下载缓存",
-            category: CATEGORY_PACKAGE,
-            description: "Homebrew 下载的包、源码与 API 缓存。",
-            cleanup_note: "不会卸载已安装的软件包。",
-            paths: vec![cache("Homebrew")],
-            process_terms: vec!["/brew ".into(), "homebrew".into()],
-            mode: CleanupMode::RemoveContents,
-        },
-        TargetSpec {
-            id: "yarn-cache",
-            name: "Yarn 缓存",
-            category: CATEGORY_PACKAGE,
-            description: "Yarn 的离线包与下载缓存。",
-            cleanup_note: "不会删除项目 node_modules。",
-            paths: vec![cache("Yarn"), home_path(".yarn/cache")],
-            process_terms: vec!["/yarn ".into(), "yarn.js".into()],
-            mode: CleanupMode::RemoveRoots,
-        },
-        TargetSpec {
-            id: "hbuilder-cache",
-            name: "HBuilderX 缓存",
-            category: CATEGORY_TOOL,
-            description: "HBuilderX 的下载、索引与临时缓存。",
-            cleanup_note: "不会删除 uni-app 项目。",
-            paths: vec![cache("HBuilder X")],
-            process_terms: vec!["/applications/hbuilderx.app/".into(), "hbuilderx".into()],
-            mode: CleanupMode::RemoveContents,
-        },
+            CleanupMode::RemoveContents,
+        ),
+        TargetSpec::new(
+            "hbuilder-cache",
+            "HBuilderX 缓存",
+            CATEGORY_TOOL,
+            "HBuilderX 的下载、索引与临时缓存。",
+            "不会删除 uni-app 项目。",
+            vec![cache("HBuilder X")],
+            vec!["/applications/hbuilderx.app/".into(), "hbuilderx".into()],
+            CleanupMode::RemoveContents,
+        ),
+        TargetSpec::new(
+            "user-app-logs",
+            "用户与应用系统日志",
+            CATEGORY_TOOL,
+            "应用运行日志、诊断报告与崩溃日志 (DiagnosticReports)。",
+            "不会影响应用正常运行或用户数据配置。",
+            vec![
+                home_path("Library/Logs"),
+                home_path("Library/Application Support/CrashReporter"),
+            ],
+            vec!["logd".into()],
+            CleanupMode::RemoveContents,
+        ),
+        TargetSpec::new(
+            "typescript-cache",
+            "TypeScript 语言服务缓存",
+            CATEGORY_TOOL,
+            "TypeScript 自动类型获取 (ATA) 与语言服务语法树缓存。",
+            "下次打开编辑器时会自动重新建立语法类型索引。",
+            vec![cache("typescript")],
+            vec!["tsserver".into(), "typescript".into()],
+            CleanupMode::RemoveContents,
+        ),
+        TargetSpec::new(
+            "electron-updater-cache",
+            "应用更新安装包暂存",
+            CATEGORY_TOOL,
+            "基于 Electron 与 ShipIt 的应用下载的历史版本升级安装包。",
+            "不会影响已安装的当前版本程序。",
+            vec![
+                cache("antigravity-updater"),
+                cache("@openchamberelectron-updater"),
+                cache("@opencode-aidesktop-updater"),
+                cache("@zcodedesktop-updater"),
+                cache("tdappdesktop-updater"),
+            ],
+            vec!["shipit".into()],
+            CleanupMode::RemoveRoots,
+        ),
+        TargetSpec::new(
+            "android-studio-cache",
+            "Android Studio 索引与缓存",
+            CATEGORY_TOOL,
+            "Android Studio IDE 的编译索引、GAV 依赖缓存与插件临时文件。",
+            "不会删除 SDK 或项目代码；打开项目时会自动重建索引。",
+            vec![
+                cache("Google/AndroidStudio2023.3"),
+                cache("Google/AndroidStudio2024.1"),
+                cache("Google/AndroidStudio2024.2"),
+                cache("Google/AndroidStudio2024.3"),
+            ],
+            vec!["studio.app".into(), "android studio".into()],
+            CleanupMode::RemoveContents,
+        ),
+        TargetSpec::new(
+            "saved-app-state",
+            "应用窗口恢复状态 (Saved State)",
+            CATEGORY_TOOL,
+            "macOS 保存的已关闭应用程序窗口状态与会话缓存。",
+            "不会删除应用数据，应用启动时将以默认窗口打开。",
+            vec![home_path("Library/Saved Application State")],
+            vec![],
+            CleanupMode::RemoveContents,
+        ),
+        TargetSpec::new(
+            "system-trash",
+            "macOS 废纸篓",
+            CATEGORY_TOOL,
+            "当前用户废纸篓中待永久删除的文件。",
+            "永久清空废纸篓中所有已删除条目。",
+            vec![home_path(".Trash")],
+            vec![],
+            CleanupMode::RemoveContents,
+        ),
     ])
+}
+
+fn candidate_workspace_roots(home: &Path) -> Vec<PathBuf> {
+    vec![
+        home.join("Desktop/code"),
+        home.join("Projects"),
+        home.join("code"),
+        home.join("workspace"),
+        home.join("Developer"),
+        home.join("Desktop/projects"),
+    ]
+}
+
+fn discover_workspace_project_specs(home: &Path) -> Vec<TargetSpec> {
+    let mut specs = Vec::new();
+    let roots = candidate_workspace_roots(home);
+
+    for root in roots {
+        if !root.is_dir() {
+            continue;
+        }
+
+        let entries = match fs::read_dir(&root) {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+
+            let name = match path.file_name().and_then(|n| n.to_str()) {
+                Some(name) if !name.starts_with('.') => name,
+                _ => continue,
+            };
+
+            let mut cache_paths = Vec::new();
+
+            let node_cache = path.join("node_modules/.cache");
+            if node_cache.is_dir() {
+                cache_paths.push(node_cache);
+            }
+
+            let next_cache = path.join(".next/cache");
+            if next_cache.is_dir() {
+                cache_paths.push(next_cache);
+            }
+
+            let turbo_cache = path.join(".turbo");
+            if turbo_cache.is_dir() {
+                cache_paths.push(turbo_cache);
+            }
+
+            let nuxt_cache = path.join(".nuxt");
+            if nuxt_cache.is_dir() {
+                cache_paths.push(nuxt_cache);
+            }
+
+            let tauri_target = path.join("src-tauri/target");
+            if tauri_target.is_dir() {
+                cache_paths.push(tauri_target);
+            }
+
+            if path.join("Cargo.toml").is_file() {
+                let rust_target = path.join("target");
+                if rust_target.is_dir() {
+                    cache_paths.push(rust_target);
+                }
+            }
+
+            if cache_paths.is_empty() {
+                continue;
+            }
+
+            let id = if let Ok(rel) = path.strip_prefix(home) {
+                let slug = rel.to_string_lossy().replace(['/', '\\', ' ', '.'], "-");
+                format!("project-build-{slug}")
+            } else {
+                format!("project-build-{name}")
+            };
+
+            let name_display = format!("{name} 构建缓存");
+            let desc = format!("{name} 项目的本地中间编译产物与构建缓存（如 Webpack/Next/Vite/Target）。");
+
+            specs.push(TargetSpec::new(
+                id,
+                name_display,
+                CATEGORY_BUILD,
+                desc,
+                "保留项目源码与 node_modules 依赖；重新构建时会自动生成。",
+                cache_paths,
+                vec![format!("/{}/", name.to_lowercase())],
+                CleanupMode::RemoveRoots,
+            ));
+        }
+    }
+
+    specs
+}
+
+fn target_specs() -> Result<Vec<TargetSpec>, String> {
+    let home = home_dir()?;
+    let mut specs = static_target_specs(&home)?;
+    let dynamic_specs = discover_workspace_project_specs(&home);
+    specs.extend(dynamic_specs);
+    Ok(specs)
 }
 
 fn home_dir() -> Result<PathBuf, String> {
@@ -855,20 +1362,51 @@ fn process_label(pid: u32, command: &str) -> String {
     let lower = command.to_lowercase();
     let name = if lower.contains("visual studio code") || lower.contains("code helper") {
         "VS Code"
+    } else if lower.contains("cursor") {
+        "Cursor"
+    } else if lower.contains("claude") {
+        "Claude"
     } else if lower.contains("google chrome") {
         "Chrome"
     } else if lower.contains("wechatwebdevtools") || lower.contains("微信开发者工具") {
         "微信开发者工具"
     } else if lower.contains("playwright") {
         "Playwright"
+    } else if lower.contains("cypress") {
+        "Cypress"
     } else if lower.contains("xcode") {
         "Xcode"
+    } else if lower.contains("simulator") || lower.contains("coresimulatord") {
+        "iOS 模拟器"
+    } else if lower.contains("studio") || lower.contains("adb") {
+        "Android Studio"
     } else if lower.contains("gradle") {
         "Gradle"
     } else if lower.contains("pnpm") {
         "pnpm"
     } else if lower.contains("npm") || lower.contains("npx") {
         "npm"
+    } else if lower.contains("bun") {
+        "Bun"
+    } else if lower.contains("cargo") || lower.contains("rustc") {
+        "Cargo / Rust"
+    } else if lower.contains("go build") || lower.contains("gopls") {
+        "Go"
+    } else if lower.contains("conda") || lower.contains("mamba") {
+        "Conda"
+    } else if lower.contains("docker") || lower.contains("orbstack") {
+        "Docker / 容器"
+    } else if lower.contains("idea")
+        || lower.contains("webstorm")
+        || lower.contains("pycharm")
+        || lower.contains("goland")
+        || lower.contains("clion")
+    {
+        "JetBrains IDE"
+    } else if lower.contains("postman") {
+        "Postman"
+    } else if lower.contains("apifox") {
+        "Apifox"
     } else if lower.contains("hbuilder") {
         "HBuilderX"
     } else if lower.contains("codex") {
@@ -919,10 +1457,12 @@ fn now_timestamp() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        append_cleanup_history, clear_cleanup_history_sync, is_mutating_pnpm_command,
-        path_is_within, read_cleanup_history, CleanupHistoryEntry,
+        append_cleanup_history, clear_cleanup_history_sync, ensure_allowed_root,
+        is_mutating_pnpm_command, path_is_within, read_cleanup_history, target_specs,
+        CleanupHistoryEntry,
     };
     use std::{
+        collections::BTreeSet,
         env, fs,
         time::{SystemTime, UNIX_EPOCH},
     };
@@ -974,4 +1514,30 @@ mod tests {
         assert!(read_cleanup_history(&history_dir).unwrap().is_empty());
         fs::remove_dir_all(history_dir).unwrap();
     }
+
+    #[test]
+    fn target_specs_have_unique_ids_and_valid_allowed_roots() {
+        let specs = target_specs().unwrap();
+        let mut ids = BTreeSet::new();
+        for spec in specs {
+            assert!(ids.insert(spec.id.clone()), "Duplicate target id found: {}", spec.id);
+            for path in spec.paths {
+                ensure_allowed_root(&path).expect("Allowed root verification failed");
+            }
+        }
+    }
+
+    #[test]
+    fn workspace_project_caches_are_dynamically_discovered() {
+        let home = super::home_dir().unwrap();
+        let specs = super::discover_workspace_project_specs(&home);
+        if home.join("Desktop/code").is_dir() {
+            assert!(!specs.is_empty(), "Expected to discover projects under Desktop/code");
+            if home.join("Desktop/code/pts-business/node_modules/.cache").is_dir() {
+                let has_pts_business = specs.iter().any(|spec| spec.name.contains("pts-business"));
+                assert!(has_pts_business, "Expected pts-business to be discovered dynamically");
+            }
+        }
+    }
+
 }

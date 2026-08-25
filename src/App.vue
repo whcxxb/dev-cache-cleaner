@@ -1,48 +1,114 @@
 <script setup lang="ts">
-import { computed, markRaw, nextTick, ref } from "vue";
+import { computed, markRaw, nextTick, onMounted, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { siClaudecode } from "simple-icons";
 import {
   Activity,
+  AlertCircle,
   Archive,
-  ArrowLeft,
   ArrowRight,
-  Blocks,
-  Bot,
+  ArrowUpCircle,
   Check,
-  CircleAlert,
+  ChevronRight,
   Code2,
-  FileText,
-  FolderArchive,
-  HardDrive,
+  FileCode2,
   History,
-  Info,
-  LoaderCircle,
+  Layers,
+  LayoutDashboard,
+  Loader2,
+  Lock,
+  MinusCircle,
   Package,
   RefreshCw,
-  Settings2,
   ShieldCheck,
-  Sparkles,
+  Terminal,
   Trash2,
-  TriangleAlert,
   Wrench,
   X,
 } from "@lucide/vue";
 
 type CacheState = "ready" | "partial" | "inUse" | "missing" | "unavailable";
 type CategoryId = "all" | "package" | "build" | "tool";
-type ActiveView = "home" | "cache" | "history" | "prompts" | "updates";
+type ActiveView = "home" | "cache" | "prompts" | "updates" | "history";
 
-interface CacheItem { id: string; name: string; category: Exclude<CategoryId, "all">; description: string; cleanupNote: string; paths: string[]; sizeBytes: number; state: CacheState; canClean: boolean; blockers: string[]; scanError: string | null; }
-interface ScanResult { items: CacheItem[]; totalBytes: number; reclaimableBytes: number; scannedAt: number; }
-interface CleanResult { id: string; beforeBytes: number; remainingBytes: number; freedBytes: number; skippedEntries: string[]; message: string; }
-interface CleanupHistoryEntry { id: string; targetName: string; status: "success" | "failed"; freedBytes: number; skippedEntries: string[]; message: string; createdAt: number; }
-interface PromptToolState { id: string; name: string; description: string; path: string; kind: "file" | "rules"; exists: boolean; usesGlobal: boolean; status: "shared" | "personal" | "missing" | "issue"; message: string; }
-interface PromptManagerState { global: { enabled: boolean; path: string; content: string }; tools: PromptToolState[]; ompNote: string; }
-interface ToolPromptContent { content: string; readOnly: boolean; exists: boolean; files: { name: string }[]; }
-interface ToolUpdateInfo { id: string; name: string; installed: boolean; currentVersion: string | null; latestVersion: string | null; status: "latest" | "updateAvailable" | "notInstalled" | "unavailable"; message: string; source: string; }
+interface CacheItem {
+  id: string;
+  name: string;
+  category: Exclude<CategoryId, "all">;
+  description: string;
+  cleanupNote: string;
+  paths: string[];
+  sizeBytes: number;
+  state: CacheState;
+  canClean: boolean;
+  blockers: string[];
+  scanError: string | null;
+}
 
-interface ToolBrandAsset { src?: string; path?: string; }
+interface ScanResult {
+  items: CacheItem[];
+  totalBytes: number;
+  reclaimableBytes: number;
+  scannedAt: number;
+}
+
+interface CleanResult {
+  id: string;
+  beforeBytes: number;
+  remainingBytes: number;
+  freedBytes: number;
+  skippedEntries: string[];
+  message: string;
+}
+
+interface CleanupHistoryEntry {
+  id: string;
+  targetName: string;
+  status: "success" | "failed";
+  freedBytes: number;
+  skippedEntries: string[];
+  message: string;
+  createdAt: number;
+}
+
+interface PromptToolState {
+  id: string;
+  name: string;
+  description: string;
+  path: string;
+  kind: "file" | "rules";
+  exists: boolean;
+  usesGlobal: boolean;
+  status: "shared" | "personal" | "missing" | "issue";
+  message: string;
+}
+
+interface PromptManagerState {
+  global: {
+    enabled: boolean;
+    path: string;
+    content: string;
+  };
+  tools: PromptToolState[];
+  ompNote: string;
+}
+
+interface ToolPromptContent {
+  content: string;
+  readOnly: boolean;
+  exists: boolean;
+  files: { name: string }[];
+}
+
+interface ToolUpdateInfo {
+  id: string;
+  name: string;
+  installed: boolean;
+  currentVersion: string | null;
+  latestVersion: string | null;
+  status: "latest" | "updateAvailable" | "notInstalled" | "unavailable";
+  message: string;
+  source: string;
+}
 
 const scanSnapshotKey = "devtidy.cache-scan.v1";
 
@@ -67,22 +133,11 @@ function persistScanSnapshot(snapshot: ScanResult) {
 }
 
 const categories = [
-  { id: "all" as const, label: "全部缓存", icon: markRaw(HardDrive) },
+  { id: "all" as const, label: "全部", icon: markRaw(Layers) },
   { id: "package" as const, label: "包管理器", icon: markRaw(Package) },
   { id: "build" as const, label: "构建产物", icon: markRaw(Code2) },
   { id: "tool" as const, label: "开发工具", icon: markRaw(Wrench) },
 ];
-
-const toolBrandAssets: Record<string, ToolBrandAsset> = {
-  codex: { src: "/tool-icons/codex.svg" },
-  pi: { src: "/tool-icons/pi-coding-agent.svg" },
-  opencode: { src: "/tool-icons/opencode.svg" },
-  gemini: { src: "/tool-icons/google-gemini.svg" },
-  claude: { path: siClaudecode.path },
-  grok: { src: "/tool-icons/grok.svg" },
-};
-
-function toolBrand(id: string): ToolBrandAsset { return toolBrandAssets[id] ?? {}; }
 
 const cachedScan = readScanSnapshot();
 const items = ref<CacheItem[]>(cachedScan?.items ?? []);
@@ -115,103 +170,1144 @@ const updateError = ref("");
 const toast = ref<{ type: "success" | "error"; message: string } | null>(null);
 let toastTimer: number | undefined;
 
-const filteredItems = computed(() => selectedCategory.value === "all" ? items.value : items.value.filter((item) => item.category === selectedCategory.value));
+const filteredItems = computed(() =>
+  selectedCategory.value === "all"
+    ? items.value
+    : items.value.filter((item) => item.category === selectedCategory.value)
+);
+
 const totalBytes = computed(() => items.value.reduce((sum, item) => sum + item.sizeBytes, 0));
-const reclaimableBytes = computed(() => items.value.filter((item) => item.canClean).reduce((sum, item) => sum + item.sizeBytes, 0));
+const reclaimableBytes = computed(() =>
+  items.value.filter((item) => item.canClean).reduce((sum, item) => sum + item.sizeBytes, 0)
+);
 const busyCount = computed(() => items.value.filter((item) => item.state === "inUse").length);
-const visibleSize = computed(() => filteredItems.value.reduce((sum, item) => sum + item.sizeBytes, 0));
-const selectedPromptTool = computed(() => promptManager.value?.tools.find((tool) => tool.id === selectedPromptToolId.value) ?? null);
-const viewTitle = computed(() => ({ home: "开发环境维护", cache: "垃圾清理", history: "清理记录", prompts: "提示词管理", updates: "工具升级" })[activeView.value]);
-const viewSubtitle = computed(() => ({
-  home: "集中处理本机开发缓存与开发工具规则。",
-  cache: isScanning.value ? "正在读取磁盘占用" : `上次扫描 ${formatTime(scannedAt.value)}`,
-  history: "保留最近 100 次清理尝试，包含失败原因和已释放空间。",
-  prompts: "公共提示词与工具专属配置均保存在本机。",
-  updates: isUpdateLoading.value ? "正在检查本机工具与最新发布版本。" : "检查已安装开发工具是否有可用更新。",
-})[activeView.value]);
 
-function categoryCount(category: CategoryId) { return category === "all" ? items.value.length : items.value.filter((item) => item.category === category).length; }
-function formatBytes(value: number) { if (value <= 0) return "0 B"; const units = ["B", "KB", "MB", "GB", "TB"]; const index = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1); const size = value / 1024 ** index; return `${size.toFixed(index >= 3 && size < 10 ? 1 : 0)} ${units[index]}`; }
-function formatTime(timestamp: number) { if (!timestamp) return "尚未扫描"; return new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date(timestamp * 1000)); }
-function formatDateTime(timestamp: number) { if (!timestamp) return "未知时间"; return new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(timestamp * 1000)); }
-function stateLabel(state: CacheState) { return { ready: "可清理", partial: "可部分清理", inUse: "正在使用", missing: "暂无缓存", unavailable: "无法访问" }[state]; }
-function stateIcon(state: CacheState) { return { ready: Check, partial: ShieldCheck, inUse: Activity, missing: Archive, unavailable: CircleAlert }[state]; }
-function itemIcon(category: CacheItem["category"]) { return { package: Blocks, build: FolderArchive, tool: Wrench }[category]; }
-function historyStatusLabel(status: CleanupHistoryEntry["status"]) { return status === "success" ? "已完成" : "未完成"; }
-function promptStatusLabel(status: PromptToolState["status"]) { return { shared: "公共", personal: "专属", missing: "未配置", issue: "需检查" }[status]; }
-function updateStatusLabel(status: ToolUpdateInfo["status"]) { return { latest: "已是最新", updateAvailable: "可更新", notInstalled: "未安装", unavailable: "检查失败" }[status]; }
-function normalizeError(error: unknown) { return typeof error === "string" ? error : error instanceof Error ? error.message : "操作失败，请稍后重试"; }
-function showToast(type: "success" | "error", message: string) { toast.value = { type, message }; if (toastTimer) window.clearTimeout(toastTimer); toastTimer = window.setTimeout(() => { toast.value = null; }, 4200); }
+const packageBytes = computed(() =>
+  items.value.filter((i) => i.category === "package").reduce((sum, i) => sum + i.sizeBytes, 0)
+);
+const buildBytes = computed(() =>
+  items.value.filter((i) => i.category === "build").reduce((sum, i) => sum + i.sizeBytes, 0)
+);
+const toolBytes = computed(() =>
+  items.value.filter((i) => i.category === "tool").reduce((sum, i) => sum + i.sizeBytes, 0)
+);
 
-async function scan() { isScanning.value = true; scanError.value = ""; try { const result = await invoke<ScanResult>("scan_cache_targets"); items.value = result.items; scannedAt.value = result.scannedAt; hasScanned.value = true; persistScanSnapshot(result); } catch (error) { scanError.value = normalizeError(error); } finally { isScanning.value = false; } }
-async function loadCleanupHistory() { isHistoryLoading.value = true; historyError.value = ""; try { cleanupHistory.value = await invoke<CleanupHistoryEntry[]>("get_cleanup_history"); } catch (error) { historyError.value = normalizeError(error); } finally { isHistoryLoading.value = false; } }
-function openHome() { activeView.value = "home"; }
-function openCacheView(category?: CategoryId) { if (category) selectedCategory.value = category; activeView.value = "cache"; if (!hasScanned.value) void scan(); }
-async function openHistory() { activeView.value = "history"; await loadCleanupHistory(); }
-async function clearCleanupHistory() { if (!cleanupHistory.value.length || isClearingHistory.value) return; isClearingHistory.value = true; try { await invoke("clear_cleanup_history"); cleanupHistory.value = []; showToast("success", "清理历史已清空"); } catch (error) { showToast("error", normalizeError(error)); } finally { isClearingHistory.value = false; } }
-function openConfirm(item: CacheItem) { if (!item.canClean || cleaningId.value) return; selectedItem.value = item; nextTick(() => confirmDialog.value?.showModal()); }
-function closeConfirm() { if (cleaningId.value) return; confirmDialog.value?.close(); selectedItem.value = null; }
-async function cleanSelected() { const target = selectedItem.value; if (!target || cleaningId.value) return; cleaningId.value = target.id; try { const result = await invoke<CleanResult>("clean_cache_target", { id: target.id }); const current = items.value.find((item) => item.id === result.id); if (current) { current.sizeBytes = result.remainingBytes; current.canClean = result.remainingBytes > 0; current.state = result.skippedEntries.length ? "partial" : "ready"; } persistScanSnapshot({ items: items.value, totalBytes: totalBytes.value, reclaimableBytes: reclaimableBytes.value, scannedAt: scannedAt.value }); confirmDialog.value?.close(); selectedItem.value = null; showToast("success", `已释放 ${formatBytes(result.freedBytes)}`); } catch (error) { showToast("error", normalizeError(error)); } finally { cleaningId.value = null; void loadCleanupHistory(); } }
+const pkgPercent = computed(() =>
+  totalBytes.value > 0 ? (packageBytes.value / totalBytes.value) * 100 : 0
+);
+const buildPercent = computed(() =>
+  totalBytes.value > 0 ? (buildBytes.value / totalBytes.value) * 100 : 0
+);
+const toolPercent = computed(() =>
+  totalBytes.value > 0 ? (toolBytes.value / totalBytes.value) * 100 : 0
+);
 
-async function loadPromptTool() { const tool = selectedPromptTool.value; if (!tool) return; isPromptLoading.value = true; promptError.value = ""; try { toolPrompt.value = await invoke<ToolPromptContent>("read_tool_prompt", { toolId: tool.id, fileName: selectedGrokFile.value }); } catch (error) { toolPrompt.value = null; promptError.value = normalizeError(error); } finally { isPromptLoading.value = false; } }
-async function loadPromptManager() { isPromptLoading.value = true; promptError.value = ""; try { const state = await invoke<PromptManagerState>("get_prompt_manager_state"); promptManager.value = state; globalPrompt.value = state.global.content; if (!state.tools.some((tool) => tool.id === selectedPromptToolId.value)) selectedPromptToolId.value = state.tools[0]?.id ?? ""; await loadPromptTool(); } catch (error) { promptError.value = normalizeError(error); } finally { isPromptLoading.value = false; } }
-async function openPromptManager() { activeView.value = "prompts"; await loadPromptManager(); }
-async function scanToolUpdates() { isUpdateLoading.value = true; updateError.value = ""; try { toolUpdates.value = await invoke<ToolUpdateInfo[]>("scan_tool_updates"); } catch (error) { updateError.value = normalizeError(error); } finally { isUpdateLoading.value = false; } }
-function openUpdateView() { activeView.value = "updates"; if (!toolUpdates.value.length) void scanToolUpdates(); }
-function selectPromptTool(toolId: string) { selectedPromptToolId.value = toolId; selectedGrokFile.value = null; void loadPromptTool(); }
-function selectGrokFile(fileName: string | null) { selectedGrokFile.value = fileName; void loadPromptTool(); }
-async function saveGlobalPrompt() { isPromptSaving.value = true; try { await invoke("save_global_prompt", { content: globalPrompt.value }); if (promptManager.value) promptManager.value.global.content = globalPrompt.value; showToast("success", "公共提示词已保存"); } catch (error) { showToast("error", normalizeError(error)); } finally { isPromptSaving.value = false; } }
-async function saveToolPrompt() { const tool = selectedPromptTool.value; if (!tool || !toolPrompt.value) return; isPromptSaving.value = true; try { await invoke("save_tool_prompt", { toolId: tool.id, fileName: selectedGrokFile.value, content: toolPrompt.value.content }); if (tool.kind === "rules" && !selectedGrokFile.value) selectedGrokFile.value = "dev-cache-cleaner.md"; await loadPromptManager(); showToast("success", `${tool.name} 的专属提示词已保存`); } catch (error) { showToast("error", normalizeError(error)); } finally { isPromptSaving.value = false; } }
-function requestGlobalToggle() { if (!promptManager.value || isPromptSwitching.value) return; if (promptManager.value.global.enabled) { void setGlobalPromptEnabled(false); return; } nextTick(() => promptEnableDialog.value?.showModal()); }
-async function setGlobalPromptEnabled(enabled: boolean) { isPromptSwitching.value = true; try { await invoke("set_global_prompt_enabled", { enabled }); promptEnableDialog.value?.close(); await loadPromptManager(); showToast("success", enabled ? "公共提示词已启用" : "已恢复工具专属提示词"); } catch (error) { showToast("error", normalizeError(error)); } finally { isPromptSwitching.value = false; } }
-async function toggleToolGlobal() { const tool = selectedPromptTool.value; if (!tool || !promptManager.value?.global.enabled || isPromptSwitching.value) return; isPromptSwitching.value = true; try { await invoke("set_tool_global_prompt_enabled", { toolId: tool.id, enabled: !tool.usesGlobal }); await loadPromptManager(); showToast("success", !tool.usesGlobal ? `${tool.name} 已使用公共提示词` : `${tool.name} 已恢复专属提示词`); } catch (error) { showToast("error", normalizeError(error)); } finally { isPromptSwitching.value = false; } }
+const updateAvailableCount = computed(
+  () => toolUpdates.value.filter((t) => t.status === "updateAvailable").length
+);
 
+const selectedPromptTool = computed(
+  () => promptManager.value?.tools.find((tool) => tool.id === selectedPromptToolId.value) ?? null
+);
+
+const viewTitle = computed(
+  () =>
+    ({
+      home: "概览",
+      cache: "垃圾清理",
+      prompts: "提示词管理",
+      updates: "工具升级",
+      history: "清理记录",
+    })[activeView.value]
+);
+
+const viewSubtitle = computed(
+  () =>
+    ({
+      home: "集中维护本机开发缓存、AI 提示词规则与工具版本",
+      cache: isScanning.value
+        ? "正在实时分析磁盘占用..."
+        : scannedAt.value
+          ? `上次扫描：${formatTime(scannedAt.value)}`
+          : "尚未执行扫描",
+      prompts: "公共提示词与工具专属规则均直接保存在本机原生路径",
+      updates: isUpdateLoading.value
+        ? "正在读取各工具版本与最新发布..."
+        : "检查已安装开发工具的最新版本与升级状态",
+      history: "保留最近 100 次清理记录与已释放空间审计",
+    })[activeView.value]
+);
+
+function categoryCount(category: CategoryId) {
+  return category === "all"
+    ? items.value.length
+    : items.value.filter((item) => item.category === category).length;
+}
+
+function formatBytes(value: number) {
+  if (value <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const index = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1);
+  const size = value / 1024 ** index;
+  return `${size.toFixed(index >= 3 && size < 10 ? 1 : 0)} ${units[index]}`;
+}
+
+function formatTime(timestamp: number) {
+  if (!timestamp) return "尚未扫描";
+  return new Intl.DateTimeFormat("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).format(new Date(timestamp * 1000));
+}
+
+function formatDateTime(timestamp: number) {
+  if (!timestamp) return "未知时间";
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(timestamp * 1000));
+}
+
+function stateLabel(state: CacheState) {
+  return {
+    ready: "可清理",
+    partial: "可部分清理",
+    inUse: "正在使用",
+    missing: "暂无缓存",
+    unavailable: "无法访问",
+  }[state];
+}
+
+function stateIcon(state: CacheState) {
+  return {
+    ready: Check,
+    partial: ShieldCheck,
+    inUse: Lock,
+    missing: MinusCircle,
+    unavailable: AlertCircle,
+  }[state];
+}
+
+function itemCategoryIcon(category: CacheItem["category"]) {
+  return {
+    package: Package,
+    build: Code2,
+    tool: Wrench,
+  }[category];
+}
+
+function historyStatusLabel(status: CleanupHistoryEntry["status"]) {
+  return status === "success" ? "已完成" : "失败";
+}
+
+function promptStatusLabel(status: PromptToolState["status"]) {
+  return {
+    shared: "公共",
+    personal: "专属",
+    missing: "未配置",
+    issue: "需检查",
+  }[status];
+}
+
+function updateStatusLabel(status: ToolUpdateInfo["status"]) {
+  return {
+    latest: "已是最新",
+    updateAvailable: "可更新",
+    notInstalled: "未安装",
+    unavailable: "检查失败",
+  }[status];
+}
+
+function normalizeError(error: unknown) {
+  return typeof error === "string"
+    ? error
+    : error instanceof Error
+      ? error.message
+      : "操作失败，请稍后重试";
+}
+
+function showToast(type: "success" | "error", message: string) {
+  toast.value = { type, message };
+  if (toastTimer) window.clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(() => {
+    toast.value = null;
+  }, 3600);
+}
+
+async function scan() {
+  isScanning.value = true;
+  scanError.value = "";
+  try {
+    const result = await invoke<ScanResult>("scan_cache_targets");
+    items.value = result.items;
+    scannedAt.value = result.scannedAt;
+    hasScanned.value = true;
+    persistScanSnapshot(result);
+  } catch (error) {
+    scanError.value = normalizeError(error);
+  } finally {
+    isScanning.value = false;
+  }
+}
+
+async function loadCleanupHistory() {
+  isHistoryLoading.value = true;
+  historyError.value = "";
+  try {
+    cleanupHistory.value = await invoke<CleanupHistoryEntry[]>("get_cleanup_history");
+  } catch (error) {
+    historyError.value = normalizeError(error);
+  } finally {
+    isHistoryLoading.value = false;
+  }
+}
+
+function navigateTo(view: ActiveView) {
+  activeView.value = view;
+  if (view === "cache" && !hasScanned.value) {
+    void scan();
+  } else if (view === "prompts" && !promptManager.value) {
+    void loadPromptManager();
+  } else if (view === "updates" && !toolUpdates.value.length) {
+    void scanToolUpdates();
+  } else if (view === "history" && !cleanupHistory.value.length) {
+    void loadCleanupHistory();
+  }
+}
+
+async function clearCleanupHistory() {
+  if (!cleanupHistory.value.length || isClearingHistory.value) return;
+  isClearingHistory.value = true;
+  try {
+    await invoke("clear_cleanup_history");
+    cleanupHistory.value = [];
+    showToast("success", "清理记录已清空");
+  } catch (error) {
+    showToast("error", normalizeError(error));
+  } finally {
+    isClearingHistory.value = false;
+  }
+}
+
+function openConfirm(item: CacheItem) {
+  if (!item.canClean || cleaningId.value) return;
+  selectedItem.value = item;
+  nextTick(() => confirmDialog.value?.showModal());
+}
+
+function closeConfirm() {
+  if (cleaningId.value) return;
+  confirmDialog.value?.close();
+  selectedItem.value = null;
+}
+
+async function cleanSelected() {
+  const target = selectedItem.value;
+  if (!target || cleaningId.value) return;
+  cleaningId.value = target.id;
+  try {
+    const result = await invoke<CleanResult>("clean_cache_target", { id: target.id });
+    const current = items.value.find((item) => item.id === result.id);
+    if (current) {
+      current.sizeBytes = result.remainingBytes;
+      current.canClean = result.remainingBytes > 0;
+      current.state = result.skippedEntries.length ? "partial" : "ready";
+    }
+    persistScanSnapshot({
+      items: items.value,
+      totalBytes: totalBytes.value,
+      reclaimableBytes: reclaimableBytes.value,
+      scannedAt: scannedAt.value,
+    });
+    confirmDialog.value?.close();
+    selectedItem.value = null;
+    showToast("success", `已释放 ${formatBytes(result.freedBytes)}`);
+  } catch (error) {
+    showToast("error", normalizeError(error));
+  } finally {
+    cleaningId.value = null;
+  }
+}
+
+async function loadPromptTool() {
+  const tool = selectedPromptTool.value;
+  if (!tool) return;
+  isPromptLoading.value = true;
+  promptError.value = "";
+  try {
+    toolPrompt.value = await invoke<ToolPromptContent>("read_tool_prompt", {
+      toolId: tool.id,
+      fileName: selectedGrokFile.value,
+    });
+  } catch (error) {
+    toolPrompt.value = null;
+    promptError.value = normalizeError(error);
+  } finally {
+    isPromptLoading.value = false;
+  }
+}
+
+async function loadPromptManager() {
+  isPromptLoading.value = true;
+  promptError.value = "";
+  try {
+    const state = await invoke<PromptManagerState>("get_prompt_manager_state");
+    promptManager.value = state;
+    globalPrompt.value = state.global.content;
+    if (!state.tools.some((tool) => tool.id === selectedPromptToolId.value)) {
+      selectedPromptToolId.value = state.tools[0]?.id ?? "codex";
+    }
+    await loadPromptTool();
+  } catch (error) {
+    promptError.value = normalizeError(error);
+  } finally {
+    isPromptLoading.value = false;
+  }
+}
+
+async function scanToolUpdates() {
+  isUpdateLoading.value = true;
+  updateError.value = "";
+  try {
+    toolUpdates.value = await invoke<ToolUpdateInfo[]>("scan_tool_updates");
+  } catch (error) {
+    updateError.value = normalizeError(error);
+  } finally {
+    isUpdateLoading.value = false;
+  }
+}
+
+function selectPromptTool(toolId: string) {
+  selectedPromptToolId.value = toolId;
+  selectedGrokFile.value = null;
+  void loadPromptTool();
+}
+
+function selectGrokFile(fileName: string | null) {
+  selectedGrokFile.value = fileName;
+  void loadPromptTool();
+}
+
+async function saveGlobalPrompt() {
+  isPromptSaving.value = true;
+  try {
+    await invoke("save_global_prompt", { content: globalPrompt.value });
+    if (promptManager.value) promptManager.value.global.content = globalPrompt.value;
+    showToast("success", "公共提示词已保存");
+  } catch (error) {
+    showToast("error", normalizeError(error));
+  } finally {
+    isPromptSaving.value = false;
+  }
+}
+
+async function saveToolPrompt() {
+  const tool = selectedPromptTool.value;
+  if (!tool || !toolPrompt.value) return;
+  isPromptSaving.value = true;
+  try {
+    await invoke("save_tool_prompt", {
+      toolId: tool.id,
+      fileName: selectedGrokFile.value,
+      content: toolPrompt.value.content,
+    });
+    if (tool.kind === "rules" && !selectedGrokFile.value) {
+      selectedGrokFile.value = "dev-cache-cleaner.md";
+    }
+    await loadPromptManager();
+    showToast("success", `${tool.name} 专属提示词已保存`);
+  } catch (error) {
+    showToast("error", normalizeError(error));
+  } finally {
+    isPromptSaving.value = false;
+  }
+}
+
+function requestGlobalToggle() {
+  if (!promptManager.value || isPromptSwitching.value) return;
+  if (promptManager.value.global.enabled) {
+    void setGlobalPromptEnabled(false);
+    return;
+  }
+  nextTick(() => promptEnableDialog.value?.showModal());
+}
+
+async function setGlobalPromptEnabled(enabled: boolean) {
+  isPromptSwitching.value = true;
+  try {
+    await invoke("set_global_prompt_enabled", { enabled });
+    promptEnableDialog.value?.close();
+    await loadPromptManager();
+    showToast("success", enabled ? "公共提示词已启用" : "已恢复专属提示词");
+  } catch (error) {
+    showToast("error", normalizeError(error));
+  } finally {
+    isPromptSwitching.value = false;
+  }
+}
+
+async function toggleToolGlobal() {
+  const tool = selectedPromptTool.value;
+  if (!tool || !promptManager.value?.global.enabled || isPromptSwitching.value) return;
+  isPromptSwitching.value = true;
+  try {
+    await invoke("set_tool_global_prompt_enabled", {
+      toolId: tool.id,
+      enabled: !tool.usesGlobal,
+    });
+    await loadPromptManager();
+    showToast(
+      "success",
+      !tool.usesGlobal ? `${tool.name} 已切换为公共提示词` : `${tool.name} 已恢复专属提示词`
+    );
+  } catch (error) {
+    showToast("error", normalizeError(error));
+  } finally {
+    isPromptSwitching.value = false;
+  }
+}
+
+onMounted(() => {
+  if (!hasScanned.value) {
+    void scan();
+  }
+});
 </script>
 
 <template>
-  <div class="app-shell" :class="{ 'home-shell': activeView === 'home' }">
-    <aside v-if="activeView !== 'home'" class="sidebar" aria-label="功能导航">
-      <button class="brand brand-button" type="button" @click="openHome"><span class="brand-mark" aria-hidden="true"><img src="/devtidy-icon.png" alt="" /></span><span><strong>DevTidy</strong><small>返回功能首页</small></span></button>
-      <button class="back-home-button" type="button" @click="openHome"><ArrowLeft :size="16" :stroke-width="1.8" />返回首页</button>
-      <div v-if="activeView === 'cache'" class="cache-nav"><span class="cache-nav-title">分类</span><button v-for="category in categories" :key="category.id" class="category-button" :class="{ active: selectedCategory === category.id }" type="button" @click="openCacheView(category.id)"><span class="category-icon" aria-hidden="true"><component :is="category.icon" :size="16" :stroke-width="1.8" /></span><span class="category-label">{{ category.label }}</span><span class="category-count">{{ categoryCount(category.id) }}</span></button><button class="category-button history-category-button" type="button" @click="openHistory"><span class="category-icon" aria-hidden="true"><History :size="16" :stroke-width="1.8" /></span><span class="category-label">清理记录</span><span class="category-count">{{ cleanupHistory.length }}</span></button></div>
-      <div v-else class="secondary-nav-label"><Settings2 :size="16" :stroke-width="1.8" /><span>{{ viewTitle }}</span></div>
-      <div class="safety-note"><ShieldCheck :size="17" :stroke-width="1.8" /><div><strong>安全边界已启用</strong><p>操作前会检查本机状态与固定白名单。</p></div></div>
+  <div class="app-shell">
+    <!-- macOS Unified Master Navigation Sidebar -->
+    <aside class="sidebar" aria-label="应用导航">
+      <div class="sidebar-header">
+        <img src="/devtidy-icon.png" alt="DevTidy" class="app-brand-icon" />
+        <div class="app-brand-text">
+          <span class="app-brand-title">DevTidy</span>
+          <span class="app-brand-version">开发环境维护</span>
+        </div>
+      </div>
+
+      <nav class="sidebar-nav">
+        <button
+          class="nav-item"
+          :class="{ active: activeView === 'home' }"
+          type="button"
+          @click="navigateTo('home')"
+        >
+          <span class="nav-icon"><LayoutDashboard :size="16" :stroke-width="1.75" /></span>
+          <span class="nav-label">概览</span>
+        </button>
+
+        <button
+          class="nav-item"
+          :class="{ active: activeView === 'cache' }"
+          type="button"
+          @click="navigateTo('cache')"
+        >
+          <span class="nav-icon"><Trash2 :size="16" :stroke-width="1.75" /></span>
+          <span class="nav-label">垃圾清理</span>
+          <span v-if="reclaimableBytes > 0" class="nav-badge">{{ formatBytes(reclaimableBytes) }}</span>
+        </button>
+
+        <button
+          class="nav-item"
+          :class="{ active: activeView === 'prompts' }"
+          type="button"
+          @click="navigateTo('prompts')"
+        >
+          <span class="nav-icon"><FileCode2 :size="16" :stroke-width="1.75" /></span>
+          <span class="nav-label">提示词管理</span>
+        </button>
+
+        <button
+          class="nav-item"
+          :class="{ active: activeView === 'updates' }"
+          type="button"
+          @click="navigateTo('updates')"
+        >
+          <span class="nav-icon"><ArrowUpCircle :size="16" :stroke-width="1.75" /></span>
+          <span class="nav-label">工具升级</span>
+          <span v-if="updateAvailableCount > 0" class="nav-dot" />
+        </button>
+
+        <button
+          class="nav-item"
+          :class="{ active: activeView === 'history' }"
+          type="button"
+          @click="navigateTo('history')"
+        >
+          <span class="nav-icon"><History :size="16" :stroke-width="1.75" /></span>
+          <span class="nav-label">清理记录</span>
+          <span v-if="cleanupHistory.length" class="nav-badge">{{ cleanupHistory.length }}</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="sidebar-status-card">
+          <ShieldCheck :size="16" :stroke-width="1.75" />
+          <div>
+            <strong>安全边界保护</strong>
+            <p>操作前校验本机进程与固定安全白名单</p>
+          </div>
+        </div>
+      </div>
     </aside>
 
-    <main class="main-panel">
-      <header class="toolbar"><div><h1>{{ viewTitle }}</h1><p>{{ viewSubtitle }}</p></div><button v-if="activeView === 'cache'" class="secondary-button" type="button" :disabled="isScanning" @click="scan"><RefreshCw :class="{ spinning: isScanning }" :size="16" :stroke-width="1.8" />重新扫描</button><button v-else-if="activeView === 'history'" class="secondary-button" type="button" :disabled="isHistoryLoading" @click="loadCleanupHistory"><RefreshCw :class="{ spinning: isHistoryLoading }" :size="16" :stroke-width="1.8" />刷新记录</button><button v-else-if="activeView === 'prompts'" class="secondary-button" type="button" :disabled="isPromptLoading || isPromptSwitching" @click="loadPromptManager"><RefreshCw :class="{ spinning: isPromptLoading }" :size="16" :stroke-width="1.8" />重新读取</button><button v-else-if="activeView === 'updates'" class="secondary-button" type="button" :disabled="isUpdateLoading" @click="scanToolUpdates"><RefreshCw :class="{ spinning: isUpdateLoading }" :size="16" :stroke-width="1.8" />重新检查</button></header>
-
-      <section v-if="activeView === 'home'" class="home-page">
-        <div class="home-actions">
-          <button class="home-action home-action-primary" type="button" @click="openCacheView()"><span class="home-action-top"><span class="home-action-icon home-action-icon-cache"><Trash2 :size="22" :stroke-width="1.7" /></span><span>本机缓存</span></span><span class="home-action-copy"><strong>垃圾清理</strong><small>扫描并安全清理可再生成的开发缓存</small></span><span class="home-action-footer"><span>{{ hasScanned ? `可安全清理 ${formatBytes(reclaimableBytes)}` : '尚未执行扫描' }}</span><ArrowRight :size="18" :stroke-width="1.8" /></span></button>
-          <div class="home-action-stack"><button class="home-action" type="button" @click="openPromptManager"><span class="home-action-icon home-action-icon-prompt"><FileText :size="20" :stroke-width="1.7" /></span><span class="home-action-copy"><strong>提示词管理</strong><small>管理公共规则与工具专属配置</small></span><span class="home-action-arrow"><ArrowRight :size="17" :stroke-width="1.8" /></span></button><button class="home-action" type="button" @click="openUpdateView"><span class="home-action-icon home-action-icon-update"><Sparkles :size="20" :stroke-width="1.7" /></span><span class="home-action-copy"><strong>工具升级</strong><small>检查本机开发工具的可用版本</small></span><span class="home-action-arrow"><ArrowRight :size="17" :stroke-width="1.8" /></span></button></div>
+    <!-- Main Workspace Area -->
+    <main class="main-workspace">
+      <!-- Window Toolbar Header -->
+      <header class="window-toolbar">
+        <div class="toolbar-title-group">
+          <h1>{{ viewTitle }}</h1>
+          <span class="toolbar-subtitle">{{ viewSubtitle }}</span>
         </div>
-        <div class="home-operations"><div class="home-note"><Bot :size="18" :stroke-width="1.7" /><div><strong>规则文件由你掌控</strong><p>支持 Codex、pi、OpenCode、Gemini、Claude Code 与 grok 的本地配置。</p></div></div><div class="home-state"><span>维护状态</span><strong>{{ hasScanned ? '扫描结果已就绪' : '等待首次扫描' }}</strong></div></div>
-      </section>
 
-      <template v-else-if="activeView === 'cache'">
-        <section class="summary-strip" aria-label="扫描摘要"><div class="summary-primary"><span>当前可安全清理</span><strong>{{ formatBytes(reclaimableBytes) }}</strong></div><dl class="summary-details"><div><dt>已扫描缓存</dt><dd>{{ formatBytes(totalBytes) }}</dd></div><div><dt>当前分类</dt><dd>{{ formatBytes(visibleSize) }}</dd></div><div><dt>正在使用</dt><dd>{{ busyCount }} 项</dd></div></dl></section>
-        <section class="content-section" aria-live="polite"><div class="section-heading"><div><h2>缓存项目</h2><p>大小来自本机实时扫描，清理按钮会在占用期间禁用。</p></div><span>{{ filteredItems.length }} 项</span></div><div v-if="isScanning && !items.length" class="loading-list" aria-label="正在扫描"><div v-for="index in 6" :key="index" class="skeleton-row"><span class="skeleton-icon" /><span class="skeleton-copy" /><span class="skeleton-size" /></div></div><div v-else-if="scanError" class="message-state error-state"><CircleAlert :size="24" :stroke-width="1.8" /><div><h3>扫描未完成</h3><p>{{ scanError }}</p></div><button class="secondary-button" type="button" @click="scan">重试</button></div><div v-else-if="!filteredItems.length" class="message-state"><Archive :size="24" :stroke-width="1.8" /><div><h3>当前分类没有缓存项</h3><p>切换分类或重新扫描后再查看。</p></div></div><div v-else class="cache-list"><article v-for="item in filteredItems" :key="item.id" class="cache-row"><div class="item-icon" aria-hidden="true"><component :is="itemIcon(item.category)" :size="18" :stroke-width="1.7" /></div><div class="item-content"><div class="item-title-line"><h3>{{ item.name }}</h3><span class="status" :class="`status-${item.state}`"><component :is="stateIcon(item.state)" :size="13" :stroke-width="2" />{{ stateLabel(item.state) }}</span></div><p>{{ item.description }}</p><code>{{ item.paths.join('  |  ') }}</code><p v-if="item.blockers.length" class="blocker-text"><Activity :size="13" :stroke-width="1.8" />{{ item.state === 'partial' ? '将保留' : '占用进程' }}：{{ item.blockers.join('、') }}</p><p v-if="item.scanError" class="blocker-text error-text"><TriangleAlert :size="13" :stroke-width="1.8" />{{ item.scanError }}</p></div><div class="item-actions"><strong class="item-size">{{ formatBytes(item.sizeBytes) }}</strong><button class="clean-button" type="button" :disabled="!item.canClean || Boolean(cleaningId)" :aria-label="`清理 ${item.name}`" @click="openConfirm(item)"><LoaderCircle v-if="cleaningId === item.id" class="spinning" :size="15" :stroke-width="1.9" /><Trash2 v-else :size="15" :stroke-width="1.9" />清理</button></div></article></div></section>
-      </template>
+        <div class="toolbar-actions">
+          <template v-if="activeView === 'cache'">
+            <div class="segmented-control">
+              <button
+                v-for="cat in categories"
+                :key="cat.id"
+                class="segmented-option"
+                :class="{ active: selectedCategory === cat.id }"
+                type="button"
+                @click="selectedCategory = cat.id"
+              >
+                <component :is="cat.icon" :size="13" :stroke-width="1.75" />
+                <span>{{ cat.label }}</span>
+                <span class="segmented-option-count">{{ categoryCount(cat.id) }}</span>
+              </button>
+            </div>
+            <button
+              class="btn btn-secondary"
+              type="button"
+              :disabled="isScanning"
+              @click="scan"
+            >
+              <RefreshCw :class="{ spinning: isScanning }" :size="13" :stroke-width="1.75" />
+              <span>重新扫描</span>
+            </button>
+          </template>
 
-      <section v-else-if="activeView === 'history'" class="content-section history-section" aria-live="polite"><div class="section-heading"><div><h2>操作历史</h2><p>仅记录本机通过 DevTidy 发起的清理操作。</p></div><button class="secondary-button clear-history-button" type="button" :disabled="!cleanupHistory.length || isClearingHistory" @click="clearCleanupHistory"><LoaderCircle v-if="isClearingHistory" class="spinning" :size="15" :stroke-width="1.9" /><Trash2 v-else :size="15" :stroke-width="1.9" />清空记录</button></div><div v-if="isHistoryLoading && !cleanupHistory.length" class="loading-list" aria-label="正在读取清理记录"><div v-for="index in 4" :key="index" class="skeleton-row"><span class="skeleton-icon" /><span class="skeleton-copy" /><span class="skeleton-size" /></div></div><div v-else-if="historyError" class="message-state error-state"><CircleAlert :size="24" :stroke-width="1.8" /><div><h3>无法读取清理记录</h3><p>{{ historyError }}</p></div><button class="secondary-button" type="button" @click="loadCleanupHistory">重试</button></div><div v-else-if="!cleanupHistory.length" class="message-state"><History :size="24" :stroke-width="1.8" /><div><h3>暂无清理记录</h3><p>完成一次清理后，会在这里保留操作结果与日志。</p></div></div><div v-else class="history-list"><article v-for="entry in cleanupHistory" :key="`${entry.createdAt}-${entry.id}`" class="history-row"><div class="history-icon" :class="`history-icon-${entry.status}`" aria-hidden="true"><Check v-if="entry.status === 'success'" :size="17" :stroke-width="2" /><X v-else :size="17" :stroke-width="2" /></div><div class="history-content"><div class="history-title-line"><h3>{{ entry.targetName }}</h3><span class="status" :class="`status-${entry.status === 'success' ? 'ready' : 'unavailable'}`">{{ historyStatusLabel(entry.status) }}</span></div><p>{{ entry.message }}</p><p v-if="entry.skippedEntries.length" class="history-detail">已保留 {{ entry.skippedEntries.length }} 个正在使用的条目</p></div><div class="history-meta"><strong>{{ entry.status === 'success' ? `释放 ${formatBytes(entry.freedBytes)}` : '未释放空间' }}</strong><time :datetime="new Date(entry.createdAt * 1000).toISOString()">{{ formatDateTime(entry.createdAt) }}</time></div></article></div></section>
+          <template v-else-if="activeView === 'prompts'">
+            <button
+              class="btn btn-secondary"
+              type="button"
+              :disabled="isPromptLoading || isPromptSwitching"
+              @click="loadPromptManager"
+            >
+              <RefreshCw :class="{ spinning: isPromptLoading }" :size="13" :stroke-width="1.75" />
+              <span>重新读取</span>
+            </button>
+          </template>
 
-      <section v-else-if="activeView === 'updates'" class="update-page" aria-live="polite">
-        <div v-if="isUpdateLoading && !toolUpdates.length" class="update-loading" aria-label="正在检查工具更新"><span v-for="index in 6" :key="index" /></div>
-        <div v-else-if="updateError" class="message-state error-state update-error"><CircleAlert :size="24" :stroke-width="1.8" /><div><h3>无法检查工具更新</h3><p>{{ updateError }}</p></div><button class="secondary-button" type="button" @click="scanToolUpdates">重试</button></div>
-        <section v-else class="update-section"><div class="section-heading"><div><h2>本机开发工具</h2><p>只检查版本，不会自动下载或安装更新。</p></div><span>{{ toolUpdates.length }} 项</span></div><div v-if="!toolUpdates.length" class="message-state"><Sparkles :size="24" :stroke-width="1.8" /><div><h3>尚未开始检查</h3><p>点击右上角“重新检查”读取本机工具和最新发布版本。</p></div></div><div v-else class="update-list"><article v-for="tool in toolUpdates" :key="tool.id" class="update-row"><div class="update-icon tool-brand-icon" :class="`tool-brand-${tool.id}`" aria-hidden="true"><img v-if="toolBrand(tool.id).src" :src="toolBrand(tool.id).src" alt="" /><svg v-else-if="toolBrand(tool.id).path" viewBox="0 0 24 24"><path :d="toolBrand(tool.id).path" /></svg><Blocks v-else :size="17" :stroke-width="1.7" /></div><div class="update-copy"><div><h3>{{ tool.name }}</h3><span class="update-status" :class="`update-status-${tool.status}`">{{ updateStatusLabel(tool.status) }}</span></div><p>{{ tool.message }}</p><small>来源：{{ tool.source }}</small></div><dl><div><dt>当前版本</dt><dd>{{ tool.currentVersion ?? '未安装' }}</dd></div><div><dt>最新版本</dt><dd>{{ tool.latestVersion ?? '无法读取' }}</dd></div></dl></article></div></section>
-      </section>
+          <template v-else-if="activeView === 'updates'">
+            <button
+              class="btn btn-secondary"
+              type="button"
+              :disabled="isUpdateLoading"
+              @click="scanToolUpdates"
+            >
+              <RefreshCw :class="{ spinning: isUpdateLoading }" :size="13" :stroke-width="1.75" />
+              <span>检查更新</span>
+            </button>
+          </template>
 
-      <section v-else class="prompt-page" aria-live="polite">
-        <div v-if="promptError && !promptManager" class="message-state error-state prompt-error"><CircleAlert :size="24" :stroke-width="1.8" /><div><h3>无法读取提示词配置</h3><p>{{ promptError }}</p></div><button class="secondary-button" type="button" @click="loadPromptManager">重试</button></div>
-        <template v-else-if="promptManager"><section class="prompt-global-section"><div class="prompt-section-copy"><div><span>公共提示词</span><h2>一份规则，可供多个工具共用</h2><p>公共文件位于 <code>{{ promptManager.global.path }}</code>。开启时会先备份原有专属文件。</p></div><button class="switch-control" :class="{ active: promptManager.global.enabled }" type="button" role="switch" :aria-checked="promptManager.global.enabled" :disabled="isPromptSwitching" @click="requestGlobalToggle"><span /><b>{{ promptManager.global.enabled ? '已开启' : '未开启' }}</b></button></div><textarea v-model="globalPrompt" class="prompt-editor global-editor" aria-label="公共提示词" spellcheck="false" placeholder="公共提示词默认为空。保存后，开启共享的工具会使用这里的内容。" /><div class="prompt-editor-actions"><span>{{ promptManager.global.enabled ? `正在共享给 ${promptManager.tools.filter((tool) => tool.usesGlobal).length} 个工具` : '保存内容不会自动应用，开启后才会关联到工具。' }}</span><button class="secondary-button" type="button" :disabled="isPromptSaving" @click="saveGlobalPrompt"><LoaderCircle v-if="isPromptSaving" class="spinning" :size="15" :stroke-width="1.9" /><Check v-else :size="15" :stroke-width="1.9" />保存公共提示词</button></div></section>
-          <section class="prompt-workspace"><aside class="tool-list" aria-label="开发工具列表"><div class="tool-list-heading"><h2>开发工具</h2><span>{{ promptManager.tools.length }} 个</span></div><button v-for="tool in promptManager.tools" :key="tool.id" class="tool-list-item" :class="{ active: selectedPromptToolId === tool.id }" type="button" @click="selectPromptTool(tool.id)"><span class="tool-brand-icon tool-brand-icon-small" :class="`tool-brand-${tool.id}`" aria-hidden="true"><img v-if="toolBrand(tool.id).src" :src="toolBrand(tool.id).src" alt="" /><svg v-else-if="toolBrand(tool.id).path" viewBox="0 0 24 24"><path :d="toolBrand(tool.id).path" /></svg><Settings2 v-else :size="16" :stroke-width="1.7" /></span><span><strong>{{ tool.name }}</strong><small>{{ tool.path }}</small></span><em :class="`prompt-status-${tool.status}`">{{ promptStatusLabel(tool.status) }}</em></button><div class="omp-note"><Info :size="16" :stroke-width="1.8" /><p>{{ promptManager.ompNote }}</p></div></aside><div v-if="selectedPromptTool" class="tool-detail"><div class="tool-detail-heading"><div><h2>{{ selectedPromptTool.name }}</h2><p>{{ selectedPromptTool.description }}</p><code>{{ selectedPromptTool.path }}</code></div><button v-if="promptManager.global.enabled" class="secondary-button" type="button" :disabled="isPromptSwitching || selectedPromptTool.status === 'issue'" @click="toggleToolGlobal"><LoaderCircle v-if="isPromptSwitching" class="spinning" :size="15" :stroke-width="1.9" /><span v-else>{{ selectedPromptTool.usesGlobal ? '停止使用公共提示词' : '使用公共提示词' }}</span></button></div><p class="tool-status-message" :class="{ issue: selectedPromptTool.status === 'issue' }">{{ selectedPromptTool.message }}</p><div v-if="selectedPromptTool.kind === 'rules'" class="grok-files"><span>规则文件</span><button class="grok-file" :class="{ active: !selectedGrokFile }" type="button" @click="selectGrokFile(null)">dev-cache-cleaner.md</button><button v-for="file in toolPrompt?.files" :key="file.name" class="grok-file" :class="{ active: selectedGrokFile === file.name }" type="button" @click="selectGrokFile(file.name)">{{ file.name }}</button></div><div v-if="promptError" class="inline-error"><CircleAlert :size="16" :stroke-width="1.8" />{{ promptError }}</div><div v-else-if="isPromptLoading && !toolPrompt" class="prompt-loading"><span /><span /><span /></div><template v-else-if="toolPrompt"><textarea v-model="toolPrompt.content" class="prompt-editor tool-editor" :readonly="toolPrompt.readOnly" :aria-label="`${selectedPromptTool.name} 提示词`" spellcheck="false" :placeholder="toolPrompt.readOnly ? '' : '此工具尚未配置提示词。'" /><div class="prompt-editor-actions"><span>{{ toolPrompt.readOnly ? '当前内容来自公共提示词，请在上方公共编辑器修改。' : toolPrompt.exists ? '直接保存到此工具的原生配置路径。' : '保存后会创建此工具的原生配置文件。' }}</span><button v-if="!toolPrompt.readOnly" class="secondary-button" type="button" :disabled="isPromptSaving" @click="saveToolPrompt"><LoaderCircle v-if="isPromptSaving" class="spinning" :size="15" :stroke-width="1.9" /><Check v-else :size="15" :stroke-width="1.9" />保存专属提示词</button></div></template></div></section>
-        </template>
-      </section>
+          <template v-else-if="activeView === 'history'">
+            <button
+              class="btn btn-secondary"
+              type="button"
+              :disabled="!cleanupHistory.length || isClearingHistory"
+              @click="clearCleanupHistory"
+            >
+              <Trash2 :size="13" :stroke-width="1.75" />
+              <span>清空记录</span>
+            </button>
+          </template>
+        </div>
+      </header>
+
+      <!-- View: Overview / Dashboard -->
+      <div v-if="activeView === 'home'" class="workspace-scrollable">
+        <div class="dashboard-grid">
+          <div class="dashboard-hero-card">
+            <div class="dashboard-hero-info">
+              <span class="dashboard-hero-label">当前可安全清理空间</span>
+              <span class="dashboard-hero-value">{{ formatBytes(reclaimableBytes) }}</span>
+              <span class="dashboard-hero-desc">
+                已扫描 {{ items.length }} 项缓存（共计 {{ formatBytes(totalBytes) }}），其中 {{ busyCount }} 项正在被进程使用
+              </span>
+            </div>
+            <button
+              class="btn btn-primary"
+              type="button"
+              :disabled="isScanning"
+              @click="navigateTo('cache')"
+            >
+              <span>查看缓存详情</span>
+              <ArrowRight :size="14" :stroke-width="1.75" />
+            </button>
+          </div>
+
+          <h2 class="dashboard-section-title">功能模块</h2>
+
+          <div class="dashboard-cards-row">
+            <div class="dashboard-card" @click="navigateTo('cache')">
+              <div class="dashboard-card-top">
+                <div class="dashboard-card-icon">
+                  <Trash2 :size="16" :stroke-width="1.75" />
+                </div>
+                <ChevronRight :size="14" :stroke-width="1.75" />
+              </div>
+              <div class="dashboard-card-bottom">
+                <strong>垃圾清理</strong>
+                <small>包管理器与构建缓存安全释放</small>
+              </div>
+            </div>
+
+            <div class="dashboard-card" @click="navigateTo('prompts')">
+              <div class="dashboard-card-top">
+                <div class="dashboard-card-icon">
+                  <FileCode2 :size="16" :stroke-width="1.75" />
+                </div>
+                <ChevronRight :size="14" :stroke-width="1.75" />
+              </div>
+              <div class="dashboard-card-bottom">
+                <strong>提示词管理</strong>
+                <small>统一维护各开发工具规则配置</small>
+              </div>
+            </div>
+
+            <div class="dashboard-card" @click="navigateTo('updates')">
+              <div class="dashboard-card-top">
+                <div class="dashboard-card-icon">
+                  <ArrowUpCircle :size="16" :stroke-width="1.75" />
+                </div>
+                <ChevronRight :size="14" :stroke-width="1.75" />
+              </div>
+              <div class="dashboard-card-bottom">
+                <strong>工具升级</strong>
+                <small>检查已安装 CLI 工具最新版本</small>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- View: Cache Cleaner -->
+      <div v-else-if="activeView === 'cache'" class="workspace-scrollable">
+        <section class="cache-overview-strip" aria-label="容量概览">
+          <div class="cache-summary-header">
+            <div class="cache-summary-stats">
+              <div class="cache-stat-item highlight">
+                <span>可安全释放</span>
+                <strong>{{ formatBytes(reclaimableBytes) }}</strong>
+              </div>
+              <div class="cache-stat-item">
+                <span>总已扫描缓存</span>
+                <strong>{{ formatBytes(totalBytes) }}</strong>
+              </div>
+              <div class="cache-stat-item">
+                <span>占用保护中</span>
+                <strong>{{ busyCount }} 项</strong>
+              </div>
+            </div>
+          </div>
+
+          <div class="storage-bar-wrapper">
+            <div class="storage-bar-track">
+              <div class="storage-bar-segment pkg" :style="{ width: `${pkgPercent}%` }" />
+              <div class="storage-bar-segment build" :style="{ width: `${buildPercent}%` }" />
+              <div class="storage-bar-segment tool" :style="{ width: `${toolPercent}%` }" />
+            </div>
+            <div class="storage-bar-legend">
+              <div class="legend-item">
+                <span class="legend-dot pkg" />
+                <span>包管理器 {{ formatBytes(packageBytes) }}</span>
+              </div>
+              <div class="legend-item">
+                <span class="legend-dot build" />
+                <span>构建产物 {{ formatBytes(buildBytes) }}</span>
+              </div>
+              <div class="legend-item">
+                <span class="legend-dot tool" />
+                <span>开发工具 {{ formatBytes(toolBytes) }}</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Cache Items Table -->
+        <section class="table-container">
+          <div class="table-header-bar">
+            <span class="dashboard-section-title">缓存项目清单</span>
+            <span class="toolbar-subtitle">{{ filteredItems.length }} 项</span>
+          </div>
+
+          <div v-if="isScanning && !items.length" class="skeleton-list">
+            <div v-for="index in 5" :key="index" class="skeleton-row" />
+          </div>
+
+          <div v-else-if="scanError" class="empty-state-box">
+            <AlertCircle :size="24" :stroke-width="1.75" />
+            <h3>扫描未完成</h3>
+            <p>{{ scanError }}</p>
+            <button class="btn btn-secondary" type="button" @click="scan">重试扫描</button>
+          </div>
+
+          <div v-else-if="!filteredItems.length" class="empty-state-box">
+            <Archive :size="24" :stroke-width="1.75" />
+            <h3>当前分类暂无缓存项目</h3>
+            <p>可切换其他分类或点击右上角重新扫描。</p>
+          </div>
+
+          <div v-else class="table-list">
+            <article v-for="item in filteredItems" :key="item.id" class="cache-row-item">
+              <div class="row-icon-cell" aria-hidden="true">
+                <component :is="itemCategoryIcon(item.category)" :size="16" :stroke-width="1.75" />
+              </div>
+
+              <div class="row-info-cell">
+                <div class="row-name-line">
+                  <h3>{{ item.name }}</h3>
+                  <span class="badge" :class="`badge-${item.state}`">
+                    <component :is="stateIcon(item.state)" :size="11" :stroke-width="1.75" />
+                    {{ stateLabel(item.state) }}
+                  </span>
+                </div>
+                <p class="row-desc">{{ item.description }}</p>
+                <div class="row-paths-pill" :title="item.paths.join('\n')">
+                  {{ item.paths.join('  |  ') }}
+                </div>
+                <p v-if="item.blockers.length" class="row-blocker-note">
+                  <Activity :size="11" :stroke-width="1.75" />
+                  {{ item.state === 'partial' ? '保留占用条目' : '占用进程' }}：{{ item.blockers.join('、') }}
+                </p>
+              </div>
+
+              <div class="row-size-cell">
+                {{ formatBytes(item.sizeBytes) }}
+              </div>
+
+              <div class="row-action-cell">
+                <button
+                  class="btn btn-secondary btn-sm"
+                  type="button"
+                  :disabled="!item.canClean || Boolean(cleaningId)"
+                  @click="openConfirm(item)"
+                >
+                  <Loader2 v-if="cleaningId === item.id" class="spinning" :size="12" :stroke-width="1.75" />
+                  <Trash2 v-else :size="12" :stroke-width="1.75" />
+                  <span>清理</span>
+                </button>
+              </div>
+            </article>
+          </div>
+        </section>
+      </div>
+
+      <!-- View: Prompts Manager (Master-Detail Split View) -->
+      <div v-else-if="activeView === 'prompts'" class="prompt-split-workspace">
+        <!-- Sub-Sidebar: Tools & Global Prompts -->
+        <aside class="prompt-sidebar-pane" aria-label="开发工具规则列表">
+          <span class="prompt-pane-title">公共规则</span>
+          <button
+            class="prompt-tool-btn"
+            :class="{ active: selectedPromptToolId === '__global__' }"
+            type="button"
+            @click="selectedPromptToolId = '__global__'"
+          >
+            <FileCode2 :size="16" :stroke-width="1.75" />
+            <div class="prompt-tool-info">
+              <span class="prompt-tool-name">公共提示词</span>
+              <span class="prompt-tool-path">global.md</span>
+            </div>
+            <span
+              class="prompt-tool-badge"
+              :class="promptManager?.global.enabled ? 'shared' : 'personal'"
+            >
+              {{ promptManager?.global.enabled ? '已开启' : '未开启' }}
+            </span>
+          </button>
+
+          <span class="prompt-pane-title" style="margin-top: 8px;">开发工具</span>
+          <template v-if="promptManager">
+            <button
+              v-for="tool in promptManager.tools"
+              :key="tool.id"
+              class="prompt-tool-btn"
+              :class="{ active: selectedPromptToolId === tool.id }"
+              type="button"
+              @click="selectPromptTool(tool.id)"
+            >
+              <Terminal :size="15" :stroke-width="1.75" />
+              <div class="prompt-tool-info">
+                <span class="prompt-tool-name">{{ tool.name }}</span>
+                <span class="prompt-tool-path">{{ tool.path.split('/').pop() }}</span>
+              </div>
+              <span class="prompt-tool-badge" :class="tool.status">
+                {{ promptStatusLabel(tool.status) }}
+              </span>
+            </button>
+          </template>
+        </aside>
+
+        <!-- Main Detail Editor Pane -->
+        <section class="prompt-editor-pane">
+          <!-- Global Prompt Editor -->
+          <template v-if="selectedPromptToolId === '__global__'">
+            <div class="editor-header-bar">
+              <div class="editor-header-left">
+                <span class="editor-title">公共提示词 (Global Prompts)</span>
+                <span class="editor-path-code">{{ promptManager?.global.path }}</span>
+              </div>
+              <div class="toolbar-actions">
+                <button
+                  class="switch-control"
+                  :class="{ active: promptManager?.global.enabled }"
+                  type="button"
+                  role="switch"
+                  :aria-checked="promptManager?.global.enabled"
+                  :disabled="isPromptSwitching"
+                  @click="requestGlobalToggle"
+                >
+                  <span class="switch-track" />
+                  <span class="switch-label">
+                    {{ promptManager?.global.enabled ? '已开启共享' : '未开启共享' }}
+                  </span>
+                </button>
+              </div>
+            </div>
+
+            <textarea
+              v-model="globalPrompt"
+              class="code-editor-textarea"
+              placeholder="公共提示词默认为空。开启共享后，关联的工具将读取这里的内容..."
+              spellcheck="false"
+            />
+
+            <div class="editor-footer-bar">
+              <span>
+                {{
+                  promptManager?.global.enabled
+                    ? `正在共享给 ${promptManager.tools.filter((t) => t.usesGlobal).length} 个工具`
+                    : '开启共享后，工具将优先读取公共提示词'
+                }}
+              </span>
+              <button
+                class="btn btn-primary btn-sm"
+                type="button"
+                :disabled="isPromptSaving"
+                @click="saveGlobalPrompt"
+              >
+                <Loader2 v-if="isPromptSaving" class="spinning" :size="12" :stroke-width="1.75" />
+                <Check v-else :size="12" :stroke-width="1.75" />
+                <span>保存公共提示词</span>
+              </button>
+            </div>
+          </template>
+
+          <!-- Specific Tool Editor -->
+          <template v-else-if="selectedPromptTool">
+            <div class="editor-header-bar">
+              <div class="editor-header-left">
+                <span class="editor-title">{{ selectedPromptTool.name }}</span>
+                <span class="editor-path-code">{{ selectedPromptTool.path }}</span>
+              </div>
+              <div class="toolbar-actions">
+                <button
+                  v-if="promptManager?.global.enabled"
+                  class="btn btn-secondary btn-sm"
+                  type="button"
+                  :disabled="isPromptSwitching || selectedPromptTool.status === 'issue'"
+                  @click="toggleToolGlobal"
+                >
+                  <Loader2 v-if="isPromptSwitching" class="spinning" :size="12" :stroke-width="1.75" />
+                  <span v-else>
+                    {{ selectedPromptTool.usesGlobal ? '退出公共提示词' : '使用公共提示词' }}
+                  </span>
+                </button>
+              </div>
+            </div>
+
+            <!-- Grok Rule Files Switcher -->
+            <div v-if="selectedPromptTool.kind === 'rules'" class="editor-tab-bar">
+              <button
+                class="editor-tab"
+                :class="{ active: !selectedGrokFile }"
+                type="button"
+                @click="selectGrokFile(null)"
+              >
+                dev-cache-cleaner.md
+              </button>
+              <button
+                v-for="file in toolPrompt?.files"
+                :key="file.name"
+                class="editor-tab"
+                :class="{ active: selectedGrokFile === file.name }"
+                type="button"
+                @click="selectGrokFile(file.name)"
+              >
+                {{ file.name }}
+              </button>
+            </div>
+
+            <textarea
+              v-if="toolPrompt"
+              v-model="toolPrompt.content"
+              class="code-editor-textarea"
+              :readonly="toolPrompt.readOnly"
+              spellcheck="false"
+              :placeholder="toolPrompt.readOnly ? '内容来自公共提示词，请在公共提示词中编辑。' : '此工具尚未配置提示词。直接在此输入并保存即可创建。'"
+            />
+
+            <div class="editor-footer-bar">
+              <span>
+                {{
+                  toolPrompt?.readOnly
+                    ? '当前内容来自公共提示词'
+                    : toolPrompt?.exists
+                      ? '直接保存到工具原生配置路径'
+                      : '保存后将自动创建配置文件'
+                }}
+              </span>
+              <button
+                v-if="!toolPrompt?.readOnly"
+                class="btn btn-primary btn-sm"
+                type="button"
+                :disabled="isPromptSaving"
+                @click="saveToolPrompt"
+              >
+                <Loader2 v-if="isPromptSaving" class="spinning" :size="12" :stroke-width="1.75" />
+                <Check v-else :size="12" :stroke-width="1.75" />
+                <span>保存专属提示词</span>
+              </button>
+            </div>
+          </template>
+        </section>
+      </div>
+
+      <!-- View: Tool Updates -->
+      <div v-else-if="activeView === 'updates'" class="workspace-scrollable">
+        <section class="update-matrix-container">
+          <div class="table-header-bar">
+            <span class="dashboard-section-title">本机已安装 CLI 工具</span>
+            <span class="toolbar-subtitle">{{ toolUpdates.length }} 项</span>
+          </div>
+
+          <div v-if="isUpdateLoading && !toolUpdates.length" class="skeleton-list">
+            <div v-for="index in 4" :key="index" class="skeleton-row" />
+          </div>
+
+          <div v-else-if="updateError" class="empty-state-box">
+            <AlertCircle :size="24" :stroke-width="1.75" />
+            <h3>检查失败</h3>
+            <p>{{ updateError }}</p>
+            <button class="btn btn-secondary" type="button" @click="scanToolUpdates">重试</button>
+          </div>
+
+          <div v-else-if="!toolUpdates.length" class="empty-state-box">
+            <ArrowUpCircle :size="24" :stroke-width="1.75" />
+            <h3>尚未检查工具版本</h3>
+            <p>点击右上角「检查更新」读取本机工具版本与发布信息。</p>
+          </div>
+
+          <div v-else class="table-list">
+            <article v-for="tool in toolUpdates" :key="tool.id" class="update-row-item">
+              <div class="row-icon-cell">
+                <Terminal :size="15" :stroke-width="1.75" />
+              </div>
+
+              <div class="update-info-cell">
+                <h3>{{ tool.name }}</h3>
+                <p>{{ tool.message }}</p>
+              </div>
+
+              <div class="update-version-cell">
+                <span class="version-tag">{{ tool.currentVersion ?? '未安装' }}</span>
+                <ArrowRight :size="12" :stroke-width="1.75" style="color: var(--text-tertiary);" />
+                <span
+                  class="version-tag"
+                  :class="{ new: tool.status === 'updateAvailable' }"
+                >
+                  {{ tool.latestVersion ?? '未知' }}
+                </span>
+              </div>
+
+              <div style="text-align: right;">
+                <span
+                  class="badge"
+                  :class="{
+                    'badge-ready': tool.status === 'latest',
+                    'badge-partial': tool.status === 'updateAvailable',
+                    'badge-missing': tool.status === 'notInstalled',
+                    'badge-unavailable': tool.status === 'unavailable',
+                  }"
+                >
+                  {{ updateStatusLabel(tool.status) }}
+                </span>
+              </div>
+            </article>
+          </div>
+        </section>
+      </div>
+
+      <!-- View: History -->
+      <div v-else-if="activeView === 'history'" class="workspace-scrollable">
+        <section class="table-container">
+          <div class="table-header-bar">
+            <span class="dashboard-section-title">清理历史流水</span>
+            <span class="toolbar-subtitle">{{ cleanupHistory.length }} 条记录</span>
+          </div>
+
+          <div v-if="isHistoryLoading && !cleanupHistory.length" class="skeleton-list">
+            <div v-for="index in 4" :key="index" class="skeleton-row" />
+          </div>
+
+          <div v-else-if="historyError" class="empty-state-box">
+            <AlertCircle :size="24" :stroke-width="1.75" />
+            <h3>读取记录失败</h3>
+            <p>{{ historyError }}</p>
+            <button class="btn btn-secondary" type="button" @click="loadCleanupHistory">重试</button>
+          </div>
+
+          <div v-else-if="!cleanupHistory.length" class="empty-state-box">
+            <History :size="24" :stroke-width="1.75" />
+            <h3>暂无清理记录</h3>
+            <p>完成一次垃圾清理后，操作审计与释放容量将在此展示。</p>
+          </div>
+
+          <div v-else class="table-list">
+            <article
+              v-for="entry in cleanupHistory"
+              :key="`${entry.createdAt}-${entry.id}`"
+              class="history-row-item"
+            >
+              <div
+                class="history-icon-circle"
+                :class="entry.status === 'success' ? 'success' : 'failed'"
+              >
+                <Check v-if="entry.status === 'success'" :size="12" :stroke-width="2" />
+                <X v-else :size="12" :stroke-width="2" />
+              </div>
+
+              <div class="row-info-cell">
+                <div class="row-name-line">
+                  <h3>{{ entry.targetName }}</h3>
+                  <span
+                    class="badge"
+                    :class="entry.status === 'success' ? 'badge-ready' : 'badge-unavailable'"
+                  >
+                    {{ historyStatusLabel(entry.status) }}
+                  </span>
+                </div>
+                <p class="row-desc">{{ entry.message }}</p>
+                <p v-if="entry.skippedEntries.length" class="row-blocker-note">
+                  已安全保留 {{ entry.skippedEntries.length }} 个正在占用的文件
+                </p>
+              </div>
+
+              <div class="history-meta-cell">
+                <strong>
+                  {{ entry.status === 'success' ? `释放 ${formatBytes(entry.freedBytes)}` : '未释放空间' }}
+                </strong>
+                <time :datetime="new Date(entry.createdAt * 1000).toISOString()">
+                  {{ formatDateTime(entry.createdAt) }}
+                </time>
+              </div>
+            </article>
+          </div>
+        </section>
+      </div>
     </main>
 
-    <dialog ref="confirmDialog" class="confirm-dialog" @cancel.prevent="closeConfirm"><div v-if="selectedItem" class="dialog-content"><div class="dialog-icon" aria-hidden="true"><Trash2 :size="20" :stroke-width="1.8" /></div><div class="dialog-copy"><h2>清理 {{ selectedItem.name }}</h2><p>将处理约 <strong>{{ formatBytes(selectedItem.sizeBytes) }}</strong> 的缓存。{{ selectedItem.cleanupNote }}</p><div class="path-box"><code v-for="path in selectedItem.paths" :key="path">{{ path }}</code></div><div class="dialog-note"><Info :size="15" :stroke-width="1.8" />执行前会再次检查占用状态，检测到风险会自动停止。</div></div><div class="dialog-actions"><button class="secondary-button" type="button" :disabled="Boolean(cleaningId)" @click="closeConfirm">取消</button><button class="danger-button" type="button" :disabled="Boolean(cleaningId)" @click="cleanSelected"><LoaderCircle v-if="cleaningId" class="spinning" :size="16" :stroke-width="1.9" /><Trash2 v-else :size="16" :stroke-width="1.9" />{{ cleaningId ? '正在清理' : '确认清理' }}</button></div></div></dialog>
-    <dialog ref="promptEnableDialog" class="confirm-dialog prompt-confirm-dialog" @cancel.prevent="promptEnableDialog?.close()"><div class="dialog-content"><div class="dialog-icon prompt-dialog-icon" aria-hidden="true"><FileText :size="20" :stroke-width="1.8" /></div><div class="dialog-copy"><h2>开启公共提示词</h2><p>参与共享的工具会改为引用同一份公共文件。它们现有的专属提示词将自动备份，关闭共享或单独退出共享时可以恢复。</p></div><div class="dialog-actions"><button class="secondary-button" type="button" :disabled="isPromptSwitching" @click="promptEnableDialog?.close()">取消</button><button class="primary-button" type="button" :disabled="isPromptSwitching" @click="setGlobalPromptEnabled(true)"><LoaderCircle v-if="isPromptSwitching" class="spinning" :size="16" :stroke-width="1.9" /><FileText v-else :size="16" :stroke-width="1.9" />确认开启</button></div></div></dialog>
-    <div v-if="toast" class="toast" :class="`toast-${toast.type}`" role="status"><Check v-if="toast.type === 'success'" :size="17" :stroke-width="2" /><X v-else :size="17" :stroke-width="2" /><span>{{ toast.message }}</span></div>
+    <!-- macOS Sheet Modal: Confirm Cleanup -->
+    <dialog ref="confirmDialog" class="macos-sheet" @cancel.prevent="closeConfirm">
+      <div v-if="selectedItem" class="sheet-body">
+        <div class="sheet-header">
+          <div class="sheet-icon-box danger">
+            <Trash2 :size="18" :stroke-width="1.75" />
+          </div>
+          <div class="sheet-copy">
+            <h2>确认清理 {{ selectedItem.name }}？</h2>
+            <p>
+              将安全清理约 <strong>{{ formatBytes(selectedItem.sizeBytes) }}</strong> 的缓存文件。{{ selectedItem.cleanupNote }}
+            </p>
+          </div>
+        </div>
+
+        <div class="sheet-path-preview">
+          <span v-for="path in selectedItem.paths" :key="path">{{ path }}</span>
+        </div>
+      </div>
+
+      <div class="sheet-footer">
+        <button
+          class="btn btn-secondary"
+          type="button"
+          :disabled="Boolean(cleaningId)"
+          @click="closeConfirm"
+        >
+          取消
+        </button>
+        <button
+          class="btn btn-danger"
+          type="button"
+          :disabled="Boolean(cleaningId)"
+          @click="cleanSelected"
+        >
+          <Loader2 v-if="cleaningId" class="spinning" :size="13" :stroke-width="1.75" />
+          <Trash2 v-else :size="13" :stroke-width="1.75" />
+          <span>{{ cleaningId ? '正在清理...' : '确认清理' }}</span>
+        </button>
+      </div>
+    </dialog>
+
+    <!-- macOS Sheet Modal: Enable Global Prompts -->
+    <dialog ref="promptEnableDialog" class="macos-sheet" @cancel.prevent="promptEnableDialog?.close()">
+      <div class="sheet-body">
+        <div class="sheet-header">
+          <div class="sheet-icon-box">
+            <FileCode2 :size="18" :stroke-width="1.75" />
+          </div>
+          <div class="sheet-copy">
+            <h2>开启公共提示词</h2>
+            <p>
+              启用后，支持共享的开发工具将统一引用同一份公共提示词。各工具现有的专属配置文件将自动备份，关闭或单独退出时可完整恢复。
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div class="sheet-footer">
+        <button
+          class="btn btn-secondary"
+          type="button"
+          :disabled="isPromptSwitching"
+          @click="promptEnableDialog?.close()"
+        >
+          取消
+        </button>
+        <button
+          class="btn btn-primary"
+          type="button"
+          :disabled="isPromptSwitching"
+          @click="setGlobalPromptEnabled(true)"
+        >
+          <Loader2 v-if="isPromptSwitching" class="spinning" :size="13" :stroke-width="1.75" />
+          <Check v-else :size="13" :stroke-width="1.75" />
+          <span>确认开启</span>
+        </button>
+      </div>
+    </dialog>
+
+    <!-- Floating Toast Capsule -->
+    <div v-if="toast" class="toast-capsule" :class="`toast-${toast.type}`" role="status">
+      <Check v-if="toast.type === 'success'" :size="14" :stroke-width="2" />
+      <AlertCircle v-else :size="14" :stroke-width="2" />
+      <span>{{ toast.message }}</span>
+    </div>
   </div>
 </template>

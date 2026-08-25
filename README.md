@@ -29,9 +29,9 @@ This developer build uses ad-hoc signing. It is intended for developers and user
 
 ## Current scan targets
 
-- Package managers: uv, npm, npx, pnpm, Yarn, and Homebrew
-- Build artifacts: pts-business, reimux-tools, Xcode DerivedData, and Gradle
-- Developer tools: Playwright, WeChat DevTools, VS Code update cache, Codex, Chrome, and HBuilderX
+- Package managers: Cargo, Go, Bun, uv, npm, npx, pnpm, Yarn, pip, Conda, CocoaPods, Homebrew, Maven, Composer, and RubyGems
+- Build artifacts: Xcode DerivedData, Xcode Archives, iOS Simulator, Android SDK / build-cache, Gradle, Turborepo, and Electron builder
+- Developer tools & logs: VS Code, Cursor, Claude, JetBrains IDEs, WeChat DevTools, Playwright, Cypress, Docker, Postman, Apifox, Chrome, user logs, and crash reports
 
 The target allowlist lives in `src-tauri/src/cleaner.rs`. New targets must define their path, usage rules, cleanup method, and user-facing guidance.
 
@@ -89,9 +89,9 @@ xattr -cr "/Applications/DevTidy.app"
 
 ## 当前扫描目标
 
-- 包管理器：uv、npm、npx、pnpm、Yarn、Homebrew
-- 构建产物：pts-business、reimux-tools、Xcode DerivedData、Gradle
-- 开发工具：Playwright、微信开发者工具、VS Code 更新缓存、Codex、Chrome、HBuilderX
+- 包管理器：Cargo、Go、Bun、uv、npm、npx、pnpm、Yarn、pip、Conda、CocoaPods、Homebrew、Maven、Composer、RubyGems
+- 构建产物：Xcode DerivedData、Xcode Archives、iOS 模拟器、Android SDK 与构建缓存、Gradle、Turborepo、Electron
+- 开发工具与日志：VS Code、Cursor、Claude、JetBrains 全家桶、微信开发者工具、Playwright、Cypress、Docker、Postman、Apifox、Chrome、系统与应用日志、崩溃报告
 
 目标白名单定义在 `src-tauri/src/cleaner.rs`。新增目标时需要同时明确路径、占用规则、清理方式和用户提示。
 
