@@ -113,6 +113,15 @@
   box-sizing: border-box;
   margin: 0;
   padding: 0;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+*::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+  background: transparent;
 }
 
 html,
@@ -640,7 +649,7 @@ textarea:focus-visible {
 
 .dashboard-cards-row {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: 12px;
 }
 
@@ -1103,6 +1112,16 @@ textarea:focus-visible {
   line-height: 1.6;
   color: var(--text-primary);
   background: var(--surface-canvas);
+  overflow-y: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.code-editor-textarea::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+  background: transparent;
 }
 
 .code-editor-textarea:focus {
@@ -1139,7 +1158,7 @@ textarea:focus-visible {
 
 .update-row-item {
   display: grid;
-  grid-template-columns: 32px 1fr 180px 100px;
+  grid-template-columns: 32px 1fr 180px 120px;
   align-items: center;
   gap: 12px;
   padding: 12px 16px;
@@ -1165,6 +1184,23 @@ textarea:focus-visible {
   font-size: 11px;
   color: var(--text-secondary);
   margin-top: 2px;
+}
+
+.tool-method-pill {
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: var(--radius-badge);
+  background: var(--surface-subtle);
+  color: var(--text-tertiary);
+  font-weight: 500;
+  border: 1px solid var(--border-subtle);
+}
+
+.update-action-cell {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
 }
 
 .update-version-cell {
@@ -1435,4 +1471,145 @@ dialog.macos-sheet::backdrop {
     opacity: 1;
     transform: translate(-50%, 0);
   }
+}
+
+/* --------------------------------------------------------------------------
+   Changelog & Version Styles
+   -------------------------------------------------------------------------- */
+dialog.macos-sheet.changelog-sheet {
+  width: 500px;
+  max-height: 85vh;
+}
+
+.changelog-sheet-body {
+  display: flex;
+  flex-direction: column;
+  padding: 20px 20px 16px;
+  gap: 14px;
+  max-height: calc(85vh - 64px);
+}
+
+.changelog-version-badge {
+  font-family: "SF Mono", ui-monospace, monospace;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: var(--radius-badge);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.changelog-timeline-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  padding: 2px;
+  max-height: 380px;
+}
+
+.changelog-timeline-list::-webkit-scrollbar {
+  display: none;
+}
+
+.changelog-entry-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border-radius: var(--radius-panel);
+  background: var(--surface-card);
+  border: 1px solid var(--border-subtle);
+}
+
+.changelog-entry-card.current {
+  border-color: var(--accent);
+  background: var(--surface-selected);
+}
+
+.changelog-entry-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.changelog-tag {
+  font-family: "SF Mono", ui-monospace, monospace;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.changelog-current-pill {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: var(--radius-badge);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.changelog-date {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  font-family: "SF Mono", ui-monospace, monospace;
+}
+
+.changelog-highlights-list {
+  list-style: disc;
+  padding-left: 18px;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.changelog-highlights-list li {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.app-brand-version-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: transparent;
+  border: none;
+  padding: 0;
+  margin-top: 1px;
+  font-size: 11px;
+  font-family: "SF Mono", ui-monospace, monospace;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: color 0.1s ease;
+}
+
+.app-brand-version-btn:hover {
+  color: var(--accent);
+}
+
+.sidebar-version-action-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: var(--radius-control);
+  background: var(--surface-card);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.1s ease;
+}
+
+.sidebar-version-action-btn:hover {
+  background: var(--surface-hover);
+  border-color: var(--border-default);
+  color: var(--text-primary);
 }

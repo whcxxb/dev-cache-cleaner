@@ -20,6 +20,8 @@ import {
   Package,
   RefreshCw,
   ShieldCheck,
+  Sparkles,
+  Tag,
   Terminal,
   Trash2,
   Wrench,
@@ -108,7 +110,65 @@ interface ToolUpdateInfo {
   status: "latest" | "updateAvailable" | "notInstalled" | "unavailable";
   message: string;
   source: string;
+  installMethod?: string | null;
+  upgradeCommand?: string | null;
 }
+
+interface ToolUpgradeResult {
+  id: string;
+  name: string;
+  success: boolean;
+  message: string;
+  previousVersion: string | null;
+  currentVersion: string | null;
+  upgradeCommand: string;
+}
+
+const appVersion = "0.1.3";
+
+interface ChangelogEntry {
+  version: string;
+  date: string;
+  isLatest?: boolean;
+  highlights: string[];
+}
+
+const changelogs: ChangelogEntry[] = [
+  {
+    version: "0.1.3",
+    date: "2026-08-25",
+    isLatest: true,
+    highlights: [
+      "提示词管理：点击开发工具提示词支持直接编辑，保存后自动退出公共规则并保存为专属提示词",
+      "工具升级：新增一键全部升级与按工具单独升级，自动检测 pnpm / npm / Homebrew / Bun / Yarn / Cargo 及原生升级命令",
+      "界面优化：全局及编辑区移除原生滚动条，保持优雅安静的 macOS 原生质感",
+      "新增应用版本与更新日志查看面板",
+    ],
+  },
+  {
+    version: "0.1.2",
+    date: "2026-08-20",
+    highlights: [
+      "工具升级检查：支持扫描本机 CLI 工具（Codex、pi、omp、OpenCode、Gemini、Claude Code、grok）的版本状态",
+      "提示词管理：集成公共规则与工具专属规则原生路径读写",
+    ],
+  },
+  {
+    version: "0.1.1",
+    date: "2026-08-15",
+    highlights: [
+      "垃圾清理：优化包管理器缓存（pnpm、npm、yarn、bun、cargo 等）扫描与安全性校验",
+      "清理记录：保留历史审计记录与已释放空间统计",
+    ],
+  },
+  {
+    version: "0.1.0",
+    date: "2026-08-10",
+    highlights: [
+      "DevTidy 初始版本发布，提供 macOS 风格的开发环境缓存清理与维护工具",
+    ],
+  },
+];
 
 const scanSnapshotKey = "devtidy.cache-scan.v1";
 
@@ -143,6 +203,7 @@ const cachedScan = readScanSnapshot();
 const items = ref<CacheItem[]>(cachedScan?.items ?? []);
 const selectedCategory = ref<CategoryId>("all");
 const activeView = ref<ActiveView>("home");
+const changelogDialog = ref<HTMLDialogElement | null>(null);
 const isScanning = ref(false);
 const hasScanned = ref(Boolean(cachedScan));
 const cleaningId = ref<string | null>(null);
@@ -167,6 +228,9 @@ const isPromptSwitching = ref(false);
 const toolUpdates = ref<ToolUpdateInfo[]>([]);
 const isUpdateLoading = ref(false);
 const updateError = ref("");
+const upgradingToolId = ref<string | null>(null);
+const isBatchUpgrading = ref(false);
+const batchUpgradeProgress = ref<{ current: number; total: number; toolName: string } | null>(null);
 const toast = ref<{ type: "success" | "error"; message: string } | null>(null);
 let toastTimer: number | undefined;
 
@@ -392,6 +456,14 @@ async function clearCleanupHistory() {
   }
 }
 
+function openChangelog() {
+  nextTick(() => changelogDialog.value?.showModal());
+}
+
+function closeChangelog() {
+  changelogDialog.value?.close();
+}
+
 function openConfirm(item: CacheItem) {
   if (!item.canClean || cleaningId.value) return;
   selectedItem.value = item;
@@ -480,6 +552,70 @@ async function scanToolUpdates() {
   }
 }
 
+async function upgradeSingleTool(tool: ToolUpdateInfo) {
+  if (upgradingToolId.value || isBatchUpgrading.value || isUpdateLoading.value) return;
+  upgradingToolId.value = tool.id;
+  try {
+    const result = await invoke<ToolUpgradeResult>("upgrade_tool", { toolId: tool.id });
+    if (result.success) {
+      showToast("success", `${tool.name} ${result.message}`);
+    } else {
+      showToast("error", `${tool.name} ${result.message}`);
+    }
+    await scanToolUpdates();
+  } catch (error) {
+    showToast("error", normalizeError(error));
+  } finally {
+    upgradingToolId.value = null;
+  }
+}
+
+async function upgradeAllAvailableTools() {
+  if (upgradingToolId.value || isBatchUpgrading.value || isUpdateLoading.value) return;
+  const available = toolUpdates.value.filter((t) => t.status === "updateAvailable");
+  if (!available.length) return;
+
+  isBatchUpgrading.value = true;
+  let successCount = 0;
+  let failCount = 0;
+
+  try {
+    for (let index = 0; index < available.length; index++) {
+      const tool = available[index];
+      batchUpgradeProgress.value = {
+        current: index + 1,
+        total: available.length,
+        toolName: tool.name,
+      };
+      try {
+        const result = await invoke<ToolUpgradeResult>("upgrade_tool", { toolId: tool.id });
+        if (result.success) {
+          successCount++;
+        } else {
+          failCount++;
+        }
+      } catch {
+        failCount++;
+      }
+    }
+
+    if (failCount === 0) {
+      showToast("success", `已成功升级全部 ${successCount} 个工具`);
+    } else if (successCount > 0) {
+      showToast("success", `已完成升级：${successCount} 个成功，${failCount} 个失败`);
+    } else {
+      showToast("error", `工具升级失败，请检查各工具安装环境`);
+    }
+
+    await scanToolUpdates();
+  } catch (error) {
+    showToast("error", normalizeError(error));
+  } finally {
+    isBatchUpgrading.value = false;
+    batchUpgradeProgress.value = null;
+  }
+}
+
 function selectPromptTool(toolId: string) {
   selectedPromptToolId.value = toolId;
   selectedGrokFile.value = null;
@@ -507,6 +643,7 @@ async function saveGlobalPrompt() {
 async function saveToolPrompt() {
   const tool = selectedPromptTool.value;
   if (!tool || !toolPrompt.value) return;
+  const wasUsingGlobal = tool.usesGlobal;
   isPromptSaving.value = true;
   try {
     await invoke("save_tool_prompt", {
@@ -518,7 +655,12 @@ async function saveToolPrompt() {
       selectedGrokFile.value = "dev-cache-cleaner.md";
     }
     await loadPromptManager();
-    showToast("success", `${tool.name} 专属提示词已保存`);
+    showToast(
+      "success",
+      wasUsingGlobal
+        ? `${tool.name} 已退出公共提示词并保存为专属提示词`
+        : `${tool.name} 专属提示词已保存`
+    );
   } catch (error) {
     showToast("error", normalizeError(error));
   } finally {
@@ -585,7 +727,10 @@ onMounted(() => {
         <img src="/devtidy-icon.png" alt="DevTidy" class="app-brand-icon" />
         <div class="app-brand-text">
           <span class="app-brand-title">DevTidy</span>
-          <span class="app-brand-version">开发环境维护</span>
+          <button class="app-brand-version-btn" type="button" @click="openChangelog">
+            <Tag :size="10" :stroke-width="1.75" />
+            <span>v{{ appVersion }}</span>
+          </button>
         </div>
       </div>
 
@@ -645,6 +790,11 @@ onMounted(() => {
       </nav>
 
       <div class="sidebar-footer">
+        <button class="sidebar-version-action-btn" type="button" @click="openChangelog">
+          <Sparkles :size="13" :stroke-width="1.75" />
+          <span>v{{ appVersion }} 更新日志</span>
+        </button>
+
         <div class="sidebar-status-card">
           <ShieldCheck :size="16" :stroke-width="1.75" />
           <div>
@@ -705,9 +855,26 @@ onMounted(() => {
 
           <template v-else-if="activeView === 'updates'">
             <button
+              v-if="updateAvailableCount > 0"
+              class="btn btn-primary"
+              type="button"
+              :disabled="isUpdateLoading || isBatchUpgrading || upgradingToolId !== null"
+              @click="upgradeAllAvailableTools"
+            >
+              <Loader2 v-if="isBatchUpgrading" class="spinning" :size="13" :stroke-width="1.75" />
+              <ArrowUpCircle v-else :size="13" :stroke-width="1.75" />
+              <span>
+                {{
+                  isBatchUpgrading && batchUpgradeProgress
+                    ? `正在升级 (${batchUpgradeProgress.current}/${batchUpgradeProgress.total})`
+                    : `一键升级 (${updateAvailableCount})`
+                }}
+              </span>
+            </button>
+            <button
               class="btn btn-secondary"
               type="button"
-              :disabled="isUpdateLoading"
+              :disabled="isUpdateLoading || isBatchUpgrading || upgradingToolId !== null"
               @click="scanToolUpdates"
             >
               <RefreshCw :class="{ spinning: isUpdateLoading }" :size="13" :stroke-width="1.75" />
@@ -790,6 +957,19 @@ onMounted(() => {
               <div class="dashboard-card-bottom">
                 <strong>工具升级</strong>
                 <small>检查已安装 CLI 工具最新版本</small>
+              </div>
+            </div>
+
+            <div class="dashboard-card" @click="openChangelog">
+              <div class="dashboard-card-top">
+                <div class="dashboard-card-icon">
+                  <Sparkles :size="16" :stroke-width="1.75" />
+                </div>
+                <ChevronRight :size="14" :stroke-width="1.75" />
+              </div>
+              <div class="dashboard-card-bottom">
+                <strong>更新日志</strong>
+                <small>v{{ appVersion }} 版本记录与特性</small>
               </div>
             </div>
           </div>
@@ -1058,23 +1238,21 @@ onMounted(() => {
               v-if="toolPrompt"
               v-model="toolPrompt.content"
               class="code-editor-textarea"
-              :readonly="toolPrompt.readOnly"
               spellcheck="false"
-              :placeholder="toolPrompt.readOnly ? '内容来自公共提示词，请在公共提示词中编辑。' : '此工具尚未配置提示词。直接在此输入并保存即可创建。'"
+              :placeholder="toolPrompt.exists ? '在此输入提示词内容...' : '此工具尚未配置提示词。直接在此输入并保存即可创建。'"
             />
 
             <div class="editor-footer-bar">
               <span>
                 {{
-                  toolPrompt?.readOnly
-                    ? '当前内容来自公共提示词'
-                    : toolPrompt?.exists
+                  selectedPromptTool.usesGlobal
+                    ? '当前继承公共提示词，修改保存后将自动转为专属提示词'
+                    : selectedPromptTool.exists
                       ? '直接保存到工具原生配置路径'
                       : '保存后将自动创建配置文件'
                 }}
               </span>
               <button
-                v-if="!toolPrompt?.readOnly"
                 class="btn btn-primary btn-sm"
                 type="button"
                 :disabled="isPromptSaving"
@@ -1082,7 +1260,7 @@ onMounted(() => {
               >
                 <Loader2 v-if="isPromptSaving" class="spinning" :size="12" :stroke-width="1.75" />
                 <Check v-else :size="12" :stroke-width="1.75" />
-                <span>保存专属提示词</span>
+                <span>{{ selectedPromptTool.usesGlobal ? '保存为专属提示词' : '保存专属提示词' }}</span>
               </button>
             </div>
           </template>
@@ -1093,8 +1271,29 @@ onMounted(() => {
       <div v-else-if="activeView === 'updates'" class="workspace-scrollable">
         <section class="update-matrix-container">
           <div class="table-header-bar">
-            <span class="dashboard-section-title">本机已安装 CLI 工具</span>
-            <span class="toolbar-subtitle">{{ toolUpdates.length }} 项</span>
+            <div style="display: flex; align-items: baseline; gap: 8px;">
+              <span class="dashboard-section-title">本机已安装 CLI 工具</span>
+              <span class="toolbar-subtitle">
+                {{ toolUpdates.length }} 项{{ updateAvailableCount > 0 ? ` · ${updateAvailableCount} 项可升级` : '' }}
+              </span>
+            </div>
+            <button
+              v-if="updateAvailableCount > 0"
+              class="btn btn-primary btn-sm"
+              type="button"
+              :disabled="isUpdateLoading || isBatchUpgrading || upgradingToolId !== null"
+              @click="upgradeAllAvailableTools"
+            >
+              <Loader2 v-if="isBatchUpgrading" class="spinning" :size="12" :stroke-width="1.75" />
+              <ArrowUpCircle v-else :size="12" :stroke-width="1.75" />
+              <span>
+                {{
+                  isBatchUpgrading && batchUpgradeProgress
+                    ? `正在升级 (${batchUpgradeProgress.current}/${batchUpgradeProgress.total})`
+                    : `一键全部升级 (${updateAvailableCount})`
+                }}
+              </span>
+            </button>
           </div>
 
           <div v-if="isUpdateLoading && !toolUpdates.length" class="skeleton-list">
@@ -1121,7 +1320,12 @@ onMounted(() => {
               </div>
 
               <div class="update-info-cell">
-                <h3>{{ tool.name }}</h3>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <h3>{{ tool.name }}</h3>
+                  <span v-if="tool.installMethod" class="tool-method-pill">
+                    {{ tool.installMethod }}
+                  </span>
+                </div>
                 <p>{{ tool.message }}</p>
               </div>
 
@@ -1136,12 +1340,42 @@ onMounted(() => {
                 </span>
               </div>
 
-              <div style="text-align: right;">
+              <div class="update-action-cell">
+                <button
+                  v-if="tool.status === 'updateAvailable'"
+                  class="btn btn-primary btn-sm"
+                  type="button"
+                  :disabled="
+                    isUpdateLoading ||
+                    isBatchUpgrading ||
+                    upgradingToolId !== null
+                  "
+                  @click="upgradeSingleTool(tool)"
+                >
+                  <Loader2
+                    v-if="
+                      upgradingToolId === tool.id ||
+                      (isBatchUpgrading && batchUpgradeProgress?.toolName === tool.name)
+                    "
+                    class="spinning"
+                    :size="12"
+                    :stroke-width="1.75"
+                  />
+                  <ArrowUpCircle v-else :size="12" :stroke-width="1.75" />
+                  <span>
+                    {{
+                      upgradingToolId === tool.id ||
+                      (isBatchUpgrading && batchUpgradeProgress?.toolName === tool.name)
+                        ? '升级中'
+                        : '升级'
+                    }}
+                  </span>
+                </button>
                 <span
+                  v-else
                   class="badge"
                   :class="{
                     'badge-ready': tool.status === 'latest',
-                    'badge-partial': tool.status === 'updateAvailable',
                     'badge-missing': tool.status === 'notInstalled',
                     'badge-unavailable': tool.status === 'unavailable',
                   }"
@@ -1299,6 +1533,56 @@ onMounted(() => {
           <Loader2 v-if="isPromptSwitching" class="spinning" :size="13" :stroke-width="1.75" />
           <Check v-else :size="13" :stroke-width="1.75" />
           <span>确认开启</span>
+        </button>
+      </div>
+    </dialog>
+
+    <!-- macOS Sheet Modal: Changelog / Release Notes -->
+    <dialog ref="changelogDialog" class="macos-sheet changelog-sheet" @cancel.prevent="closeChangelog">
+      <div class="sheet-body changelog-sheet-body">
+        <div class="sheet-header">
+          <div class="sheet-icon-box">
+            <Sparkles :size="18" :stroke-width="1.75" />
+          </div>
+          <div class="sheet-copy">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <h2>DevTidy 更新日志</h2>
+              <span class="changelog-version-badge">v{{ appVersion }}</span>
+            </div>
+            <p>集中维护本机开发缓存、AI 提示词规则与工具版本</p>
+          </div>
+        </div>
+
+        <div class="changelog-timeline-list">
+          <article
+            v-for="entry in changelogs"
+            :key="entry.version"
+            class="changelog-entry-card"
+            :class="{ current: entry.isLatest }"
+          >
+            <div class="changelog-entry-header">
+              <div style="display: flex; align-items: center; gap: 6px;">
+                <span class="changelog-tag">v{{ entry.version }}</span>
+                <span v-if="entry.isLatest" class="changelog-current-pill">当前版本</span>
+              </div>
+              <time class="changelog-date">{{ entry.date }}</time>
+            </div>
+            <ul class="changelog-highlights-list">
+              <li v-for="(item, idx) in entry.highlights" :key="idx">
+                {{ item }}
+              </li>
+            </ul>
+          </article>
+        </div>
+      </div>
+
+      <div class="sheet-footer">
+        <button
+          class="btn btn-secondary"
+          type="button"
+          @click="closeChangelog"
+        >
+          关闭
         </button>
       </div>
     </dialog>

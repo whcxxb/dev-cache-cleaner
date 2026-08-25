@@ -270,7 +270,7 @@ impl PromptStore {
         if shared {
             return Ok(ToolPromptContent {
                 content: read_utf8_file(&global_path, "读取公共提示词")?,
-                read_only: true,
+                read_only: false,
                 exists: true,
                 files,
             });
@@ -304,9 +304,19 @@ impl PromptStore {
     ) -> Result<(), String> {
         self.ensure_global_file()?;
         let spec = tool_spec(tool_id)?;
-        let config = self.load_config()?;
-        if self.global_enabled_for(&config, spec) && is_managed_link(&self.target_path(spec), &self.global_path()) {
-            return Err("该工具正在使用公共提示词，请先停止共享后再编辑专属提示词。".to_string());
+        let mut config = self.load_config()?;
+        let target_path = self.target_path(spec);
+        let global_path = self.global_path();
+
+        let is_shared_link = is_managed_link(&target_path, &global_path);
+        let is_configured_global = config.use_global.get(spec.id).copied().unwrap_or(true);
+
+        if is_shared_link || (config.global_enabled && is_configured_global) {
+            if is_shared_link {
+                remove_file_or_link(&target_path)?;
+            }
+            config.use_global.insert(spec.id.to_string(), false);
+            self.save_config(&config)?;
         }
 
         let path = self.personal_prompt_path(spec, file_name)?;
@@ -702,6 +712,66 @@ mod tests {
         store.set_global_enabled(false).unwrap();
         assert!(!rules_dir.join(GROK_GLOBAL_FILE_NAME).exists());
         assert_eq!(read_utf8_file(&rules_dir.join("existing.md"), "test").unwrap(), "keep this");
+        cleanup(&store);
+    }
+
+    #[test]
+    fn save_tool_prompt_while_global_enabled_automatically_decouples_and_saves_exclusive_file() {
+        let store = test_store("save-auto-decouple");
+        store.save_global_prompt("common prompt").unwrap();
+        store.set_global_enabled(true).unwrap();
+
+        let codex = tool_spec("codex").unwrap();
+        let codex_path = store.target_path(codex);
+        assert!(is_managed_link(&codex_path, &store.global_path()));
+
+        // Tool prompt content is initially from global prompt and editable (not read_only)
+        let initial_prompt = store.read_tool_prompt("codex", None).unwrap();
+        assert_eq!(initial_prompt.content, "common prompt");
+        assert!(!initial_prompt.read_only);
+
+        // Saving tool prompt should automatically decouple from global prompt and write personal file
+        store
+            .save_tool_prompt("codex", None, "custom codex rules")
+            .unwrap();
+
+        assert!(!is_managed_link(&codex_path, &store.global_path()));
+        assert_eq!(
+            read_utf8_file(&codex_path, "read codex").unwrap(),
+            "custom codex rules"
+        );
+
+        let state = store.build_state().unwrap();
+        let codex_state = state.tools.iter().find(|t| t.id == "codex").unwrap();
+        assert!(!codex_state.uses_global);
+        assert_eq!(codex_state.status, "personal");
+
+        // Other tools still use global prompt
+        let pi_state = state.tools.iter().find(|t| t.id == "pi").unwrap();
+        assert!(pi_state.uses_global);
+        assert_eq!(pi_state.status, "shared");
+
+        // Grok test: saving personal rule decouples grok and removes global rule link
+        let grok = tool_spec("grok").unwrap();
+        let grok_global_path = store.target_path(grok);
+        assert!(is_managed_link(&grok_global_path, &store.global_path()));
+
+        store
+            .save_tool_prompt("grok", Some("dev-cache-cleaner.md"), "custom grok rules")
+            .unwrap();
+
+        assert!(!grok_global_path.exists());
+        let grok_personal_path = store.personal_prompt_path(grok, Some("dev-cache-cleaner.md")).unwrap();
+        assert_eq!(
+            read_utf8_file(&grok_personal_path, "read grok").unwrap(),
+            "custom grok rules"
+        );
+
+        let state_after_grok = store.build_state().unwrap();
+        let grok_state = state_after_grok.tools.iter().find(|t| t.id == "grok").unwrap();
+        assert!(!grok_state.uses_global);
+        assert_eq!(grok_state.status, "personal");
+
         cleanup(&store);
     }
 
