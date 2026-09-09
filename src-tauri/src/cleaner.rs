@@ -624,11 +624,21 @@ fn run_pnpm_store_prune() -> Result<(), String> {
     if output.status.success() {
         Ok(())
     } else {
+        // pnpm 部分错误(如 ERR_PNPM_MODIFIED_DEPENDENCY)会写入 stdout 而非 stderr，
+        // 仅读取 stderr 会得到空串而落入笼统的"执行失败"。因此先读 stderr，
+        // 为空时回退到 stdout，让用户看到真实原因。
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        Err(if stderr.is_empty() {
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let detail = if !stderr.is_empty() { stderr } else { stdout };
+        let detail = detail.trim();
+        Err(if detail.is_empty() {
             "pnpm store prune 执行失败".to_string()
+        } else if detail.contains("MODIFIED_DEPENDENCY") || detail.contains("mutated") {
+            format!(
+                "{detail}\n提示：pnpm store 中存在被修改的包，请先运行 `pnpm install --force` 修复依赖后重试。"
+            )
         } else {
-            stderr
+            detail.to_string()
         })
     }
 }
