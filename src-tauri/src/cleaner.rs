@@ -604,8 +604,21 @@ fn reject_symlink_root(path: &Path) -> Result<(), String> {
 
 fn run_pnpm_store_prune() -> Result<(), String> {
     let executable = find_pnpm_executable().ok_or_else(|| "未找到 pnpm".to_string())?;
-    let output = Command::new(executable)
-        .args(["store", "prune"])
+    let mut command = Command::new(executable);
+    command.args(["store", "prune"]);
+
+    // GUI 应用由 Finder/LaunchServices 启动，进程 PATH 只有系统默认值
+    // (/usr/bin:/bin:...)，不包含个人安装的 node。pnpm 的 shim 脚本在
+    // `bin/node` 不存在时会回退到 `exec node ...`，因此必须把常见 node
+    // 安装目录注入子进程 PATH，否则在图形界面下清理 pnpm store 会报
+    // `exec: node: not found`。
+    if let Some(home) = home_dir().ok() {
+        if let Some(path) = node_aware_path(&home) {
+            command.env("PATH", path);
+        }
+    }
+
+    let output = command
         .output()
         .map_err(|error| format!("无法启动 pnpm store prune：{error}"))?;
     if output.status.success() {
@@ -631,6 +644,47 @@ fn find_pnpm_executable() -> Option<PathBuf> {
         candidates.push(home.join("Library/pnpm/pnpm"));
     }
     candidates.into_iter().find(|path| path.is_file())
+}
+
+/// 收集常见 node 可执行文件所在目录，将其注入子进程 PATH。
+/// 覆盖 nvm、.local/bin、hermes、Homebrew、bun 等个人安装位置。
+fn node_aware_path(home: &Path) -> Option<String> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    dirs.push(home.join(".local/bin"));
+    dirs.push(home.join(".hermes/node/bin"));
+    dirs.push(home.join(".bun/bin"));
+    dirs.push(home.join("Library/pnpm/bin"));
+
+    // 展开 nvm 各版本目录，取每个版本下的 bin。
+    let nvm_versions = home.join(".nvm/versions/node");
+    if let Ok(entries) = fs::read_dir(&nvm_versions) {
+        for entry in entries.flatten() {
+            let bin = entry.path().join("bin");
+            if bin.is_dir() {
+                dirs.push(bin);
+            }
+        }
+    }
+
+    dirs.push(PathBuf::from("/opt/homebrew/bin"));
+    dirs.push(PathBuf::from("/usr/local/bin"));
+
+    let segments: Vec<String> = dirs
+        .into_iter()
+        .map(|dir| dir.to_string_lossy().to_string())
+        .collect();
+    if segments.is_empty() {
+        return None;
+    }
+
+    let mut path = segments.join(":");
+    if let Ok(existing) = env::var("PATH") {
+        if !existing.is_empty() {
+            path.push(':');
+            path.push_str(&existing);
+        }
+    }
+    Some(path)
 }
 
 fn directory_size(path: &Path) -> Result<u64, String> {
@@ -1458,12 +1512,13 @@ fn now_timestamp() -> u64 {
 mod tests {
     use super::{
         append_cleanup_history, clear_cleanup_history_sync, ensure_allowed_root,
-        is_mutating_pnpm_command, path_is_within, read_cleanup_history, target_specs,
-        CleanupHistoryEntry,
+        is_mutating_pnpm_command, node_aware_path, path_is_within, read_cleanup_history,
+        target_specs, CleanupHistoryEntry,
     };
     use std::{
         collections::BTreeSet,
         env, fs,
+        process::Command,
         time::{SystemTime, UNIX_EPOCH},
     };
 
@@ -1479,6 +1534,25 @@ mod tests {
         assert!(!is_mutating_pnpm_command("node pnpm.mjs dlx playwright"));
         assert!(is_mutating_pnpm_command("node pnpm.mjs install"));
         assert!(is_mutating_pnpm_command("pnpm store prune"));
+    }
+
+    #[test]
+    fn node_aware_path_resolves_node_executable() {
+        let home = super::home_dir().unwrap();
+        let Some(path) = node_aware_path(&home) else {
+            return;
+        };
+        // GUI 进程 PATH 只有默认系统目录；注入后的 PATH 应在 sh 中定位到 node。
+        let output = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("command -v node")
+            .env("PATH", &path)
+            .output()
+            .unwrap();
+        if output.status.success() {
+            let found = String::from_utf8_lossy(&output.stdout);
+            assert!(!found.trim().is_empty(), "node should be resolvable after PATH injection");
+        }
     }
 
     #[test]
