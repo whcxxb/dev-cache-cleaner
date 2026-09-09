@@ -697,6 +697,33 @@ fn node_aware_path(home: &Path) -> Option<String> {
     Some(path)
 }
 
+/// 解析当前 pnpm 实际使用的 store 目录。
+/// pnpm store prune 只作用于当前 generation，因此 pnpm-store 目标必须指向
+/// `pnpm store path` 返回的目录，而非硬编码的旧 generation（v3/v10 等）。
+/// 旧 generation 无法被 `pnpm store prune` 清理，若统计进可清理列表会造成
+/// "点击清理却无效果"的误导，且 `du` 统计旧 generation 会显著拖慢扫描。
+fn resolve_pnpm_store_path(home: &Path) -> PathBuf {
+    if let Some(executable) = find_pnpm_executable() {
+        let mut command = Command::new(executable);
+        command.args(["store", "path"]);
+        if let Some(path) = node_aware_path(home) {
+            command.env("PATH", path);
+        }
+        if let Ok(output) = command.output() {
+            if output.status.success() {
+                let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if !value.is_empty() {
+                    let store = PathBuf::from(value);
+                    if store.is_absolute() && store.starts_with(home) {
+                        return store;
+                    }
+                }
+            }
+        }
+    }
+    home.join("Library/pnpm/store/v11")
+}
+
 fn directory_size(path: &Path) -> Result<u64, String> {
     if !path.exists() {
         return Ok(0);
@@ -826,12 +853,9 @@ fn static_target_specs(home: &Path) -> Result<Vec<TargetSpec>, String> {
             "pnpm-store",
             "pnpm 未引用包",
             CATEGORY_PACKAGE,
-            "通过 pnpm store prune 仅裁剪未被项目引用的包。",
-            "保留仍被项目链接的内容。",
-            vec![
-                home_path("Library/pnpm/store/v11"),
-                home_path("Library/pnpm/store/v3"),
-            ],
+            "通过 pnpm store prune 仅裁剪当前 store 中未被项目引用的包。",
+            "保留仍被项目链接的内容；pnpm store prune 不会删除旧 store 版本。",
+            vec![resolve_pnpm_store_path(home)],
             vec![
                 "pnpm.mjs install".into(),
                 "pnpm.mjs add".into(),
