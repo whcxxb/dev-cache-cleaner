@@ -1,22 +1,33 @@
 <script setup lang="ts">
 import { computed, markRaw, nextTick, onMounted, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   Activity,
   AlertCircle,
   Archive,
   ArrowRight,
   ArrowUpCircle,
+  Bot,
   Check,
   ChevronRight,
+  Clock,
   Code2,
+  Coins,
+  CreditCard,
+  ExternalLink,
+  Eye,
+  EyeOff,
   FileCode2,
   History,
+  Key,
   Layers,
   LayoutDashboard,
   Loader2,
   Lock,
   MinusCircle,
+  Monitor,
   Package,
   RefreshCw,
   ShieldCheck,
@@ -24,13 +35,14 @@ import {
   Tag,
   Terminal,
   Trash2,
+  Wallet,
   Wrench,
   X,
 } from "@lucide/vue";
 
 type CacheState = "ready" | "partial" | "inUse" | "missing" | "unavailable";
 type CategoryId = "all" | "package" | "build" | "tool";
-type ActiveView = "home" | "cache" | "prompts" | "updates" | "history";
+type ActiveView = "home" | "cache" | "prompts" | "updates" | "history" | "deepseek";
 
 interface CacheItem {
   id: string;
@@ -122,6 +134,21 @@ interface ToolUpgradeResult {
   previousVersion: string | null;
   currentVersion: string | null;
   upgradeCommand: string;
+}
+
+interface DeepSeekBalanceInfo {
+  currency: string;
+  total_balance: string;
+  granted_balance: string;
+  topped_up_balance: string;
+}
+
+interface DeepSeekBalanceResult {
+  success: boolean;
+  is_available: boolean;
+  balance_infos: DeepSeekBalanceInfo[];
+  updated_at: number;
+  error_message: string | null;
 }
 
 const appVersion = "0.1.3";
@@ -282,6 +309,7 @@ const viewTitle = computed(
       prompts: "提示词管理",
       updates: "工具升级",
       history: "清理记录",
+      deepseek: "DeepSeek 余额",
     })[activeView.value]
 );
 
@@ -299,6 +327,11 @@ const viewSubtitle = computed(
         ? "正在读取各工具版本与最新发布..."
         : "检查已安装开发工具的最新版本与升级状态",
       history: "保留最近 100 次清理记录与已释放空间审计",
+      deepseek: isDeepseekLoading.value
+        ? "正在连接 DeepSeek 官方接口查询账户额度..."
+        : deepseekBalance.value?.updated_at
+          ? `上次同步：${formatTime(deepseekBalance.value.updated_at)}`
+          : "实时查询 DeepSeek API 账户可用额度、赠送金与充值明细",
     })[activeView.value]
 );
 
@@ -316,23 +349,31 @@ function formatBytes(value: number) {
   return `${size.toFixed(index >= 3 && size < 10 ? 1 : 0)} ${units[index]}`;
 }
 
+function toMillis(timestamp: number): number {
+  if (!timestamp) return 0;
+  return timestamp < 1e11 ? timestamp * 1000 : timestamp;
+}
+
 function formatTime(timestamp: number) {
   if (!timestamp) return "尚未扫描";
-  return new Intl.DateTimeFormat("zh-CN", {
+  return new Intl.DateTimeFormat(undefined, {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
-  }).format(new Date(timestamp * 1000));
+    hour12: false,
+  }).format(new Date(toMillis(timestamp)));
 }
 
 function formatDateTime(timestamp: number) {
   if (!timestamp) return "未知时间";
-  return new Intl.DateTimeFormat("zh-CN", {
+  return new Intl.DateTimeFormat(undefined, {
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
-  }).format(new Date(timestamp * 1000));
+    second: "2-digit",
+    hour12: false,
+  }).format(new Date(toMillis(timestamp)));
 }
 
 function stateLabel(state: CacheState) {
@@ -712,10 +753,208 @@ async function toggleToolGlobal() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// DeepSeek Balance Management
+// ---------------------------------------------------------------------------
+const deepseekApiKey = ref("");
+const inputApiKey = ref("");
+const showApiKey = ref(false);
+const deepseekBalance = ref<DeepSeekBalanceResult | null>(null);
+const isDeepseekLoading = ref(false);
+const isSavingApiKey = ref(false);
+const isKeyFromEnv = ref(false);
+const showTrayBalance = ref(false);
+const isTogglingTray = ref(false);
+
+interface AutoSyncConfig {
+  enabled: boolean;
+  interval_minutes: number;
+}
+
+const autoSyncEnabled = ref(false);
+const autoSyncInterval = ref<number>(30);
+const isUpdatingAutoSync = ref(false);
+
+async function loadAutoSyncConfig() {
+  try {
+    const cfg = await invoke<AutoSyncConfig>("get_deepseek_auto_sync_config");
+    autoSyncEnabled.value = cfg.enabled;
+    autoSyncInterval.value = cfg.interval_minutes;
+  } catch (error) {
+    console.error("读取自动同步设置失败：", error);
+  }
+}
+
+async function toggleAutoSync() {
+  if (isUpdatingAutoSync.value) return;
+  isUpdatingAutoSync.value = true;
+  const target = !autoSyncEnabled.value;
+  try {
+    const res = await invoke<AutoSyncConfig>("set_deepseek_auto_sync_config", {
+      enabled: target,
+      intervalMinutes: autoSyncInterval.value,
+    });
+    autoSyncEnabled.value = res.enabled;
+    autoSyncInterval.value = res.interval_minutes;
+    showToast(
+      "success",
+      target
+        ? `已开启后台自动同步（每 ${res.interval_minutes === 60 ? '1 小时' : '30 分钟'}）`
+        : "已关闭后台自动同步"
+    );
+  } catch (error) {
+    showToast("error", normalizeError(error));
+  } finally {
+    isUpdatingAutoSync.value = false;
+  }
+}
+
+async function setAutoSyncInterval(minutes: number) {
+  if (isUpdatingAutoSync.value || autoSyncInterval.value === minutes) return;
+  isUpdatingAutoSync.value = true;
+  try {
+    const res = await invoke<AutoSyncConfig>("set_deepseek_auto_sync_config", {
+      enabled: autoSyncEnabled.value,
+      intervalMinutes: minutes,
+    });
+    autoSyncEnabled.value = res.enabled;
+    autoSyncInterval.value = res.interval_minutes;
+    showToast("success", `已设置自动同步周期为 ${minutes === 60 ? '1 小时' : '30 分钟'}`);
+  } catch (error) {
+    showToast("error", normalizeError(error));
+  } finally {
+    isUpdatingAutoSync.value = false;
+  }
+}
+
+async function loadTraySwitch() {
+  try {
+    const enabled = await invoke<boolean>("get_deepseek_tray_switch");
+    showTrayBalance.value = enabled;
+  } catch (error) {
+    console.error("读取状态栏设置失败：", error);
+  }
+}
+
+async function toggleTraySwitch() {
+  if (isTogglingTray.value) return;
+  isTogglingTray.value = true;
+  const target = !showTrayBalance.value;
+  try {
+    await invoke("set_deepseek_tray_switch", { enabled: target });
+    showTrayBalance.value = target;
+    showToast(
+      "success",
+      target
+        ? "已开启 macOS 状态栏实时余额显示"
+        : "已关闭 macOS 状态栏余额显示"
+    );
+  } catch (error) {
+    showToast("error", normalizeError(error));
+  } finally {
+    isTogglingTray.value = false;
+  }
+}
+
+interface ApiKeyInfo {
+  api_key: string | null;
+  is_from_env: boolean;
+}
+
+async function loadDeepSeekApiKey() {
+  try {
+    const res = await invoke<ApiKeyInfo>("get_deepseek_api_key");
+    if (res?.api_key) {
+      deepseekApiKey.value = res.api_key;
+      inputApiKey.value = res.api_key;
+      isKeyFromEnv.value = res.is_from_env;
+      await fetchDeepSeekBalance(res.api_key, true);
+    }
+  } catch (error) {
+    console.error("读取 DeepSeek 配置失败：", error);
+  }
+}
+
+async function saveDeepSeekKey() {
+  const trimmed = inputApiKey.value.trim();
+  if (!trimmed) {
+    showToast("error", "请输入有效的 DeepSeek API Key");
+    return;
+  }
+  isSavingApiKey.value = true;
+  try {
+    await invoke("save_deepseek_api_key", { apiKey: trimmed });
+    deepseekApiKey.value = trimmed;
+    isKeyFromEnv.value = false;
+    showToast("success", "DeepSeek API Key 保存成功");
+    await fetchDeepSeekBalance(trimmed);
+  } catch (error) {
+    showToast("error", normalizeError(error));
+  } finally {
+    isSavingApiKey.value = false;
+  }
+}
+
+async function clearDeepSeekKey() {
+  try {
+    await invoke("clear_deepseek_api_key");
+    deepseekApiKey.value = "";
+    inputApiKey.value = "";
+    isKeyFromEnv.value = false;
+    deepseekBalance.value = null;
+    showToast("success", "已清除 DeepSeek API Key");
+  } catch (error) {
+    showToast("error", normalizeError(error));
+  }
+}
+
+async function fetchDeepSeekBalance(apiKeyOverride?: string, silentSuccess = false) {
+  isDeepseekLoading.value = true;
+  try {
+    const res = await invoke<DeepSeekBalanceResult>("fetch_deepseek_balance", {
+      apiKey: apiKeyOverride ?? (inputApiKey.value.trim() || undefined),
+    });
+    deepseekBalance.value = res;
+    if (res.success) {
+      if (!silentSuccess) {
+        showToast("success", "DeepSeek 余额同步成功");
+      }
+    } else if (res.error_message && !silentSuccess) {
+      showToast("error", res.error_message);
+    }
+  } catch (error) {
+    const msg = normalizeError(error);
+    deepseekBalance.value = {
+      success: false,
+      is_available: false,
+      balance_infos: [],
+      updated_at: Math.floor(Date.now() / 1000),
+      error_message: msg,
+    };
+    if (!silentSuccess) {
+      showToast("error", msg);
+    }
+  } finally {
+    isDeepseekLoading.value = false;
+  }
+}
+
+function openExternalLink(url: string) {
+  void openUrl(url);
+}
+
 onMounted(() => {
   if (!hasScanned.value) {
     void scan();
   }
+  void loadDeepSeekApiKey();
+  void loadTraySwitch();
+  void loadAutoSyncConfig();
+  void listen<DeepSeekBalanceResult>("deepseek-balance-updated", (event) => {
+    if (event.payload) {
+      deepseekBalance.value = event.payload;
+    }
+  });
 });
 </script>
 
@@ -786,6 +1025,22 @@ onMounted(() => {
           <span class="nav-icon"><History :size="16" :stroke-width="1.75" /></span>
           <span class="nav-label">清理记录</span>
           <span v-if="cleanupHistory.length" class="nav-badge">{{ cleanupHistory.length }}</span>
+        </button>
+
+        <button
+          class="nav-item"
+          :class="{ active: activeView === 'deepseek' }"
+          type="button"
+          @click="navigateTo('deepseek')"
+        >
+          <span class="nav-icon"><Bot :size="16" :stroke-width="1.75" /></span>
+          <span class="nav-label">DeepSeek 余额</span>
+          <span
+            v-if="deepseekBalance && deepseekBalance.success && deepseekBalance.balance_infos.length"
+            class="nav-badge"
+          >
+            {{ deepseekBalance.balance_infos[0].currency === 'CNY' ? '¥' : '$' }}{{ deepseekBalance.balance_infos[0].total_balance }}
+          </span>
         </button>
       </nav>
 
@@ -893,6 +1148,17 @@ onMounted(() => {
               <span>清空记录</span>
             </button>
           </template>
+          <template v-else-if="activeView === 'deepseek'">
+            <button
+              class="btn btn-secondary"
+              type="button"
+              :disabled="isDeepseekLoading"
+              @click="fetchDeepSeekBalance()"
+            >
+              <RefreshCw :class="{ spinning: isDeepseekLoading }" :size="13" :stroke-width="1.75" />
+              <span>刷新余额</span>
+            </button>
+          </template>
         </div>
       </header>
 
@@ -957,6 +1223,23 @@ onMounted(() => {
               <div class="dashboard-card-bottom">
                 <strong>工具升级</strong>
                 <small>检查已安装 CLI 工具最新版本</small>
+              </div>
+            </div>
+
+            <div class="dashboard-card" @click="navigateTo('deepseek')">
+              <div class="dashboard-card-top">
+                <div class="dashboard-card-icon">
+                  <Bot :size="16" :stroke-width="1.75" />
+                </div>
+                <ChevronRight :size="14" :stroke-width="1.75" />
+              </div>
+              <div class="dashboard-card-bottom">
+                <strong>DeepSeek 余额</strong>
+                <small v-if="deepseekBalance && deepseekBalance.success && deepseekBalance.balance_infos.length">
+                  {{ deepseekBalance.balance_infos[0].currency === 'CNY' ? '¥' : '$' }}{{ deepseekBalance.balance_infos[0].total_balance }} · {{ deepseekBalance.is_available ? '可用' : '欠费' }}
+                </small>
+                <small v-else-if="deepseekApiKey">已配置 Key，点击查询</small>
+                <small v-else>未配置 API Key</small>
               </div>
             </div>
 
@@ -1454,6 +1737,293 @@ onMounted(() => {
             </article>
           </div>
         </section>
+      </div>
+
+      <!-- View: DeepSeek Balance -->
+      <div v-else-if="activeView === 'deepseek'" class="workspace-scrollable">
+        <div class="deepseek-dashboard">
+          <!-- Balance Summary Hero Card -->
+          <section class="deepseek-hero-card">
+            <div class="deepseek-hero-header">
+              <div class="deepseek-hero-title-group">
+                <div class="deepseek-avatar">
+                  <Bot :size="20" :stroke-width="1.75" />
+                </div>
+                <div>
+                  <h2>DeepSeek 账户额度总览</h2>
+                  <p>
+                    官方实时可用余额与代金券明细
+                    <span v-if="deepseekBalance?.updated_at">
+                      · 上次同步：{{ formatDateTime(deepseekBalance.updated_at) }}
+                    </span>
+                  </p>
+                </div>
+              </div>
+              <div>
+                <span
+                  v-if="deepseekBalance && deepseekBalance.success"
+                  class="badge"
+                  :class="deepseekBalance.is_available ? 'badge-ready' : 'badge-unavailable'"
+                >
+                  {{ deepseekBalance.is_available ? '正常可用' : '额度不足 / 冻结' }}
+                </span>
+                <span v-else-if="!deepseekApiKey" class="badge badge-missing">
+                  尚未配置 API Key
+                </span>
+                <span v-else class="badge badge-inUse">
+                  待同步
+                </span>
+              </div>
+            </div>
+
+            <!-- Metric Box Grid -->
+            <div class="deepseek-metrics-grid">
+              <div class="deepseek-metric-box">
+                <div class="deepseek-metric-top">
+                  <span>总可用余额</span>
+                  <div class="deepseek-metric-icon">
+                    <Wallet :size="14" :stroke-width="1.75" />
+                  </div>
+                </div>
+                <div class="deepseek-metric-value highlight">
+                  <template v-if="deepseekBalance?.balance_infos?.[0]">
+                    {{ deepseekBalance.balance_infos[0].currency === 'CNY' ? '¥' : '$' }}
+                    {{ deepseekBalance.balance_infos[0].total_balance }}
+                  </template>
+                  <template v-else>-</template>
+                </div>
+                <div class="deepseek-metric-desc">
+                  充值现金 + 赠送代金券总和
+                </div>
+              </div>
+
+              <div class="deepseek-metric-box">
+                <div class="deepseek-metric-top">
+                  <span>现金充值余额</span>
+                  <div class="deepseek-metric-icon">
+                    <CreditCard :size="14" :stroke-width="1.75" />
+                  </div>
+                </div>
+                <div class="deepseek-metric-value">
+                  <template v-if="deepseekBalance?.balance_infos?.[0]">
+                    {{ deepseekBalance.balance_infos[0].currency === 'CNY' ? '¥' : '$' }}
+                    {{ deepseekBalance.balance_infos[0].topped_up_balance }}
+                  </template>
+                  <template v-else>-</template>
+                </div>
+                <div class="deepseek-metric-desc">
+                  个人/企业自主充值的可用现金
+                </div>
+              </div>
+
+              <div class="deepseek-metric-box">
+                <div class="deepseek-metric-top">
+                  <span>赠送代金券余额</span>
+                  <div class="deepseek-metric-icon">
+                    <Coins :size="14" :stroke-width="1.75" />
+                  </div>
+                </div>
+                <div class="deepseek-metric-value">
+                  <template v-if="deepseekBalance?.balance_infos?.[0]">
+                    {{ deepseekBalance.balance_infos[0].currency === 'CNY' ? '¥' : '$' }}
+                    {{ deepseekBalance.balance_infos[0].granted_balance }}
+                  </template>
+                  <template v-else>-</template>
+                </div>
+                <div class="deepseek-metric-desc">
+                  系统优先抵扣赠送体验金
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- Error Alert Banner -->
+          <div
+            v-if="deepseekBalance && !deepseekBalance.success && deepseekBalance.error_message"
+            class="deepseek-alert-box error"
+          >
+            <AlertCircle :size="16" :stroke-width="1.75" />
+            <div>
+              <strong>查询出现异常：</strong>
+              <span>{{ deepseekBalance.error_message }}</span>
+            </div>
+          </div>
+
+          <!-- API Key Configuration Panel -->
+          <section class="deepseek-panel-card">
+            <div class="deepseek-panel-header">
+              <h3>API Key 密钥管理</h3>
+              <p>密钥将安全加密保存于本机本地存储中，仅用于与 DeepSeek 官方服务器进行认证通信。</p>
+            </div>
+
+            <div class="deepseek-input-row">
+              <div class="deepseek-input-wrapper">
+                <Key :size="14" :stroke-width="1.75" class="deepseek-input-icon" />
+                <input
+                  v-model="inputApiKey"
+                  :type="showApiKey ? 'text' : 'password'"
+                  class="deepseek-input"
+                  placeholder="sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                  autocomplete="off"
+                  spellcheck="false"
+                  @keydown.enter="saveDeepSeekKey"
+                />
+                <button
+                  class="deepseek-input-toggle"
+                  type="button"
+                  :title="showApiKey ? '隐藏密钥' : '显示明文'"
+                  @click="showApiKey = !showApiKey"
+                >
+                  <EyeOff v-if="showApiKey" :size="14" :stroke-width="1.75" />
+                  <Eye v-else :size="14" :stroke-width="1.75" />
+                </button>
+              </div>
+
+              <button
+                class="btn btn-primary"
+                type="button"
+                :disabled="isSavingApiKey || !inputApiKey.trim()"
+                @click="saveDeepSeekKey"
+              >
+                <Loader2 v-if="isSavingApiKey" class="spinning" :size="13" :stroke-width="1.75" />
+                <Check v-else :size="13" :stroke-width="1.75" />
+                <span>{{ isSavingApiKey ? '保存中...' : '保存密钥' }}</span>
+              </button>
+
+              <button
+                class="btn btn-secondary"
+                type="button"
+                :disabled="isDeepseekLoading || !inputApiKey.trim()"
+                @click="fetchDeepSeekBalance()"
+              >
+                <RefreshCw :class="{ spinning: isDeepseekLoading }" :size="13" :stroke-width="1.75" />
+                <span>立即查询</span>
+              </button>
+
+              <button
+                v-if="deepseekApiKey"
+                class="btn btn-secondary"
+                type="button"
+                :disabled="isSavingApiKey"
+                @click="clearDeepSeekKey"
+              >
+                <Trash2 :size="13" :stroke-width="1.75" />
+                <span>清除</span>
+              </button>
+            </div>
+
+            <div class="deepseek-panel-footer">
+              <span>
+                状态：{{
+                  deepseekApiKey
+                    ? isKeyFromEnv
+                      ? '已自动从本机环境变量 DEEPSEEK_API_KEY 关联'
+                      : '已保存本地专属配置'
+                    : '未配置密钥'
+                }}
+              </span>
+              <div class="deepseek-quick-links">
+                <button
+                  class="deepseek-link"
+                  type="button"
+                  @click="openExternalLink('https://platform.deepseek.com/api_keys')"
+                >
+                  <span>获取 DeepSeek API Key</span>
+                  <ExternalLink :size="11" :stroke-width="1.75" />
+                </button>
+                <button
+                  class="deepseek-link"
+                  type="button"
+                  @click="openExternalLink('https://platform.deepseek.com/top_up')"
+                >
+                  <span>前往充值</span>
+                  <ExternalLink :size="11" :stroke-width="1.75" />
+                </button>
+              </div>
+            </div>
+          </section>
+
+          <!-- Status Bar Tray Switch Card -->
+          <section class="deepseek-panel-card">
+            <div class="deepseek-switch-row">
+              <div class="deepseek-switch-info">
+                <div class="deepseek-switch-title">
+                  <Monitor :size="16" :stroke-width="1.75" />
+                  <strong>macOS 状态栏实时显示余额</strong>
+                </div>
+                <p>
+                  在屏幕右上角菜单栏常驻显示 DeepSeek 可用余额（如 <code>{{ deepseekBalance?.balance_infos?.[0]?.currency === 'CNY' ? '¥' : '$' }}{{ deepseekBalance?.balance_infos?.[0]?.total_balance || '37.88' }}</code>），点击快速呼出主界面
+                </p>
+              </div>
+
+              <button
+                class="switch-control"
+                :class="{ active: showTrayBalance }"
+                type="button"
+                role="switch"
+                :aria-checked="showTrayBalance"
+                :disabled="isTogglingTray"
+                @click="toggleTraySwitch"
+              >
+                <span class="switch-track" />
+                <span class="switch-label">{{ showTrayBalance ? '已开启' : '已关闭' }}</span>
+              </button>
+            </div>
+          </section>
+
+          <!-- Auto-sync Interval Settings Card -->
+          <section class="deepseek-panel-card">
+            <div class="deepseek-switch-row">
+              <div class="deepseek-switch-info">
+                <div class="deepseek-switch-title">
+                  <Clock :size="16" :stroke-width="1.75" />
+                  <strong>自动定时同步余额</strong>
+                </div>
+                <p>
+                  应用在后台以低功耗定时任务自动连接 DeepSeek 官方接口，同步最新余额并刷新状态栏
+                </p>
+              </div>
+
+              <div style="display: flex; align-items: center; gap: 14px;">
+                <!-- Interval Segmented Control -->
+                <div class="segmented-control" :style="{ opacity: autoSyncEnabled ? 1 : 0.45 }">
+                  <button
+                    class="segmented-option"
+                    :class="{ active: autoSyncInterval === 30 }"
+                    :disabled="!autoSyncEnabled || isUpdatingAutoSync"
+                    type="button"
+                    @click="setAutoSyncInterval(30)"
+                  >
+                    <span>30 分钟</span>
+                  </button>
+                  <button
+                    class="segmented-option"
+                    :class="{ active: autoSyncInterval === 60 }"
+                    :disabled="!autoSyncEnabled || isUpdatingAutoSync"
+                    type="button"
+                    @click="setAutoSyncInterval(60)"
+                  >
+                    <span>1 小时</span>
+                  </button>
+                </div>
+
+                <!-- On/Off Switch -->
+                <button
+                  class="switch-control"
+                  :class="{ active: autoSyncEnabled }"
+                  type="button"
+                  role="switch"
+                  :aria-checked="autoSyncEnabled"
+                  :disabled="isUpdatingAutoSync"
+                  @click="toggleAutoSync"
+                >
+                  <span class="switch-track" />
+                  <span class="switch-label">{{ autoSyncEnabled ? '已开启' : '已关闭' }}</span>
+                </button>
+              </div>
+            </div>
+          </section>
+        </div>
       </div>
     </main>
 
