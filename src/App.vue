@@ -151,7 +151,7 @@ interface DeepSeekBalanceResult {
   error_message: string | null;
 }
 
-const appVersion = "0.1.3";
+const appVersion = "0.1.4";
 
 interface ChangelogEntry {
   version: string;
@@ -162,9 +162,20 @@ interface ChangelogEntry {
 
 const changelogs: ChangelogEntry[] = [
   {
+    version: "0.1.4",
+    date: "2026-09-14",
+    isLatest: true,
+    highlights: [
+      "DeepSeek API 余额接入：支持实时查询可用总额、充值现金与赠送代金券明细",
+      "环境变量自动感知：无缝读取当前环境及 ~/.zshrc 中的 DEEPSEEK_API_KEY，免去重复配置",
+      "macOS 状态栏纯文本常驻：在顶部菜单栏实时显示格式化余额，支持独立开关控制与快捷唤起主界面",
+      "后台自动定时同步：支持 30 分钟 / 1 小时自动同步周期，全后台低功耗运行",
+      "精准本地时间：修复同步时间戳计算，自动匹配系统本地时区与 24 小时制显示",
+    ],
+  },
+  {
     version: "0.1.3",
     date: "2026-08-25",
-    isLatest: true,
     highlights: [
       "提示词管理：点击开发工具提示词支持直接编辑，保存后自动退出公共规则并保存为专属提示词",
       "工具升级：新增一键全部升级与按工具单独升级，自动检测 pnpm / npm / Homebrew / Bun / Yarn / Cargo 及原生升级命令",
